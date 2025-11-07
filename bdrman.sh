@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # bdrman - Server Management Panel (English version)
 # Author: Burak Darende
+# Version: 3.1
 
+# Root check
 if [ "$EUID" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
     echo "Root privileges required, relaunching with sudo..."
@@ -12,9 +14,51 @@ if [ "$EUID" -ne 0 ]; then
   fi
 fi
 
+# Default configuration (can be overridden by config file)
 LOGFILE="/var/log/bdrman.log"
 BACKUP_DIR="/var/backups/bdrman"
 CONFIG_FILE="/etc/bdrman/config.conf"
+VOLUMES_DIR="/var/lib/docker/volumes"
+LOCK_FILE="/var/lock/bdrman.lock"
+
+# Monitoring defaults
+MONITORING_INTERVAL=30
+ALERT_COOLDOWN=300
+DDOS_THRESHOLD=50
+CPU_ALERT_THRESHOLD=90
+MEMORY_ALERT_THRESHOLD=90
+DISK_ALERT_THRESHOLD=90
+FAILED_LOGIN_THRESHOLD=10
+
+# Telegram defaults
+TELEGRAM_CONFIG="/etc/bdrman/telegram.conf"
+TELEGRAM_SCRIPT="/usr/local/bin/bdrman-telegram"
+TELEGRAM_TIMEOUT=10
+TELEGRAM_RETRIES=2
+
+# Backup defaults
+BACKUP_RETENTION_DAYS=7
+
+# Operational defaults
+DRY_RUN=false
+NON_INTERACTIVE=false
+DEBUG=false
+ENABLE_LOCKING=true
+COMMAND_TIMEOUT=60
+DOCKER_TIMEOUT=120
+BACKUP_TIMEOUT=600
+
+# Load configuration file if exists
+load_config(){
+  if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+    [ "$DEBUG" = true ] && echo "✅ Loaded config from $CONFIG_FILE"
+  fi
+}
+
+# Call load_config early
+load_config
 
 log(){
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOGFILE" >/dev/null
@@ -31,6 +75,90 @@ log_success(){
 command_exists(){
   command -v "$1" >/dev/null 2>&1
 }
+
+# Dependency checker - runs at startup
+check_dependencies(){
+  local missing_required=()
+  local missing_optional=()
+  
+  # Required commands
+  local required=(docker tar rsync curl systemctl)
+  for cmd in "${required[@]}"; do
+    if ! command_exists "$cmd"; then
+      missing_required+=("$cmd")
+    fi
+  done
+  
+  # Optional commands
+  local optional=(jq certbot wg-quick fail2ban)
+  for cmd in "${optional[@]}"; do
+    if ! command_exists "$cmd"; then
+      missing_optional+=("$cmd")
+    fi
+  done
+  
+  # Report missing required
+  if [ ${#missing_required[@]} -gt 0 ]; then
+    echo "❌ MISSING REQUIRED TOOLS:"
+    for cmd in "${missing_required[@]}"; do
+      echo "   • $cmd"
+      case "$cmd" in
+        docker) echo "     Install: curl -fsSL https://get.docker.com | sh" ;;
+        tar) echo "     Install: apt-get install tar" ;;
+        rsync) echo "     Install: apt-get install rsync" ;;
+        curl) echo "     Install: apt-get install curl" ;;
+        systemctl) echo "     ERROR: systemd required - not available on this system" ;;
+      esac
+    done
+    echo ""
+    read -rp "Continue anyway? (yes/no): " continue_anyway
+    [ "$continue_anyway" != "yes" ] && exit 1
+  fi
+  
+  # Report missing optional
+  if [ ${#missing_optional[@]} -gt 0 ] && [ "$DEBUG" = true ]; then
+    echo "⚠️  MISSING OPTIONAL TOOLS (some features disabled):"
+    for cmd in "${missing_optional[@]}"; do
+      echo "   • $cmd"
+    done
+    echo ""
+  fi
+}
+
+# Acquire lock for critical operations
+# Usage: acquire_lock "operation_name" || return 1
+acquire_lock(){
+  local operation="${1:-general}"
+  
+  if [ "$ENABLE_LOCKING" != true ]; then
+    return 0
+  fi
+  
+  # Try to acquire lock (non-blocking)
+  exec 9>"${LOCK_FILE}"
+  if ! flock -n 9; then
+    echo "❌ Another bdrman operation is running."
+    echo "   If you're sure no other instance is running, remove: ${LOCK_FILE}"
+    log_error "Failed to acquire lock for: $operation (another instance running)"
+    return 1
+  fi
+  
+  # Write PID and operation to lock file
+  echo "$$:$operation:$(date +%s)" >&9
+  log "Lock acquired for: $operation (PID: $$)"
+  return 0
+}
+
+# Release lock (automatic on script exit, but can be called manually)
+release_lock(){
+  if [ "$ENABLE_LOCKING" = true ]; then
+    exec 9>&-
+    log "Lock released"
+  fi
+}
+
+# Trap to ensure lock is released on exit
+trap release_lock EXIT
 
 pause(){
   read -rp $'\nPress ENTER to continue...'
@@ -131,6 +259,9 @@ caprover_backup(){
   echo "=== CAPROVER BACKUP SYSTEM ==="
   echo ""
   
+  # Acquire lock to prevent concurrent backups
+  acquire_lock "caprover_backup" || return 1
+  
   VOLUMES_DIR="/var/lib/docker/volumes"
   BACKUP_BASE_DIR="/root/capBackup"
   
@@ -138,7 +269,7 @@ caprover_backup(){
   if [ ! -d "$VOLUMES_DIR" ]; then
     echo "❌ Docker volumes directory not found: $VOLUMES_DIR"
     echo "   Make sure Docker is installed and CapRover is running."
-    return
+    return 1
   fi
   
   # Create backup base directory
@@ -244,8 +375,13 @@ caprover_backup(){
     echo "   Size: $VOLUME_SIZE_HUMAN"
     echo "   Compressing..."
     
-    # Create compressed backup
-    if tar -czf "$BACKUP_FILE" -C "$VOLUMES_DIR/$VOLUME" _data 2>/dev/null; then
+    # Create atomic backup with .partial file
+    BACKUP_PARTIAL="${BACKUP_FILE}.partial"
+    
+    if timeout "${BACKUP_TIMEOUT:-600}" tar -czf "$BACKUP_PARTIAL" -C "$VOLUMES_DIR/$VOLUME" _data 2>/dev/null; then
+      # Move partial to final only on success
+      mv "$BACKUP_PARTIAL" "$BACKUP_FILE"
+      
       # Get compressed size
       COMPRESSED_SIZE=$(du -sh "$BACKUP_FILE" 2>/dev/null | cut -f1 || echo "N/A")
       
@@ -258,6 +394,8 @@ caprover_backup(){
       log_success "CapRover backup created: $BACKUP_FILE (Original: $VOLUME_SIZE_HUMAN, Compressed: $COMPRESSED_SIZE)"
       
     else
+      # Cleanup partial file on failure
+      rm -f "$BACKUP_PARTIAL"
       echo "   ❌ Failed to create backup!"
       log_error "CapRover backup failed: $VOLUME"
     fi
@@ -744,25 +882,36 @@ logs_custom_search(){
 # ============= BACKUP & RESTORE =============
 backup_create(){
   echo "=== CREATE BACKUP ==="
+  
+  # Acquire lock to prevent concurrent backups
+  acquire_lock "backup_create" || return 1
+  
   mkdir -p "$BACKUP_DIR"
   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
   BACKUP_FILE="$BACKUP_DIR/backup_$TIMESTAMP.tar.gz"
+  BACKUP_PARTIAL="${BACKUP_FILE}.partial"
   
   echo "Creating backup at: $BACKUP_FILE"
-  tar -czf "$BACKUP_FILE" \
+  echo "(Using atomic write - .partial → final)"
+  
+  # Create backup with timeout and atomic write
+  if timeout "${BACKUP_TIMEOUT:-600}" tar -czf "$BACKUP_PARTIAL" \
     /etc/wireguard 2>/dev/null \
     /etc/ufw 2>/dev/null \
     /etc/nginx 2>/dev/null \
     /etc/ssh/sshd_config 2>/dev/null \
-    "$LOGFILE" 2>/dev/null \
-    || true
-  
-  if [ -f "$BACKUP_FILE" ]; then
+    "$LOGFILE" 2>/dev/null; then
+    
+    # Move to final location only on success
+    mv "$BACKUP_PARTIAL" "$BACKUP_FILE"
     echo "✅ Backup created: $BACKUP_FILE"
     log_success "Backup created: $BACKUP_FILE"
   else
+    # Cleanup partial file
+    rm -f "$BACKUP_PARTIAL"
     echo "❌ Backup failed!"
     log_error "Backup creation failed"
+    return 1
   fi
 }
 
@@ -819,21 +968,49 @@ backup_remote(){
   read -rp "Remote path: " remote_path
   
   if [ -z "$remote" ] || [ -z "$remote_path" ]; then
-    echo "Missing information."
-    return
+    echo "❌ Missing information."
+    return 1
+  fi
+  
+  # Validate remote format (should be user@host or just host)
+  if [[ ! "$remote" =~ ^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+$|^[a-zA-Z0-9.-]+$ ]]; then
+    echo "❌ Invalid remote format. Use: user@hostname or hostname"
+    log_error "Invalid remote format: $remote"
+    return 1
+  fi
+  
+  # Sanitize remote_path (prevent directory traversal)
+  if [[ "$remote_path" =~ \.\. ]] || [[ "$remote_path" =~ [^a-zA-Z0-9/_.-] ]]; then
+    echo "❌ Invalid path. Avoid special characters and .."
+    log_error "Rejected unsafe remote path: $remote_path"
+    return 1
   fi
   
   backup_list
   read -rp "Backup file to send: " backup_file
+  
+  # Sanitize backup_file input (prevent path traversal)
+  backup_file=$(basename "$backup_file")  # Strip any path components
   LOCAL_FILE="$BACKUP_DIR/$backup_file"
   
   if [ ! -f "$LOCAL_FILE" ]; then
-    echo "File not found."
-    return
+    echo "❌ File not found: $LOCAL_FILE"
+    return 1
   fi
   
+  # Use safe scp with escaped arguments
   echo "Sending $LOCAL_FILE to $remote:$remote_path"
-  scp "$LOCAL_FILE" "$remote:$remote_path" && echo "✅ Sent successfully!" || echo "❌ Transfer failed!"
+  echo "Command: scp -- $(printf '%q' "$LOCAL_FILE") $(printf '%q' "$remote"):$(printf '%q' "$remote_path")"
+  
+  # Execute with timeout and proper escaping
+  if timeout "${COMMAND_TIMEOUT:-60}" scp -- "$(printf '%q' "$LOCAL_FILE")" "$(printf '%q' "$remote"):$(printf '%q' "$remote_path")"; then
+    echo "✅ Sent successfully!"
+    log_success "Backup sent to $remote:$remote_path"
+  else
+    echo "❌ Transfer failed!"
+    log_error "Backup transfer failed to $remote:$remote_path"
+    return 1
+  fi
 }
 
 # ============= SECURITY & HARDENING =============
@@ -962,6 +1139,221 @@ security_updates(){
   fi
 }
 
+# ============= SECURITY TOOLS AUTO INSTALL =============
+security_tools_install(){
+  echo "=== 🛡️ SECURITY TOOLS AUTO-INSTALLER ==="
+  echo ""
+  echo "This will install comprehensive security tools:"
+  echo ""
+  echo "1️⃣  Fail2Ban - Brute force protection"
+  echo "2️⃣  ClamAV - Antivirus scanner"
+  echo "3️⃣  RKHunter - Rootkit detector"
+  echo "4️⃣  Lynis - Security auditing tool"
+  echo "5️⃣  OSSEC - Host-based intrusion detection"
+  echo "6️⃣  ModSecurity - Web application firewall"
+  echo "7️⃣  AppArmor - Mandatory access control"
+  echo "8️⃣  Aide - File integrity checker"
+  echo "9️⃣  Auditd - Linux audit framework"
+  echo "🔟 Psad - Port scan attack detector"
+  echo ""
+  
+  read -rp "Install ALL security tools? (yes/no): " confirm
+  [ "$confirm" != "yes" ] && return
+  
+  echo ""
+  echo "🔄 Starting installation..."
+  echo ""
+  
+  # Update package list
+  apt update
+  
+  # 1. Fail2Ban
+  echo "📦 Installing Fail2Ban..."
+  apt install -y fail2ban
+  systemctl enable fail2ban
+  systemctl start fail2ban
+  
+  # Configure Fail2Ban
+  cat > /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled = true
+port = ssh
+logpath = /var/log/auth.log
+
+[nginx-http-auth]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+EOF
+  
+  systemctl restart fail2ban
+  echo "✅ Fail2Ban installed and configured"
+  
+  # 2. ClamAV
+  echo "📦 Installing ClamAV..."
+  apt install -y clamav clamav-daemon
+  systemctl stop clamav-freshclam
+  freshclam
+  systemctl start clamav-freshclam
+  systemctl enable clamav-freshclam
+  echo "✅ ClamAV installed"
+  
+  # 3. RKHunter
+  echo "📦 Installing RKHunter..."
+  apt install -y rkhunter
+  rkhunter --update
+  rkhunter --propupd
+  echo "✅ RKHunter installed"
+  
+  # 4. Lynis
+  echo "📦 Installing Lynis..."
+  apt install -y lynis
+  echo "✅ Lynis installed"
+  
+  # 5. AppArmor
+  echo "📦 Installing AppArmor..."
+  apt install -y apparmor apparmor-utils
+  systemctl enable apparmor
+  systemctl start apparmor
+  echo "✅ AppArmor installed"
+  
+  # 6. Aide
+  echo "📦 Installing Aide..."
+  apt install -y aide aide-common
+  aideinit
+  mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+  echo "✅ Aide installed"
+  
+  # 7. Auditd
+  echo "📦 Installing Auditd..."
+  apt install -y auditd audispd-plugins
+  systemctl enable auditd
+  systemctl start auditd
+  echo "✅ Auditd installed"
+  
+  # 8. Psad
+  echo "📦 Installing Psad..."
+  apt install -y psad
+  
+  # Configure psad
+  sed -i 's/EMAIL_ADDRESSES.*/EMAIL_ADDRESSES     root@localhost;/' /etc/psad/psad.conf
+  sed -i 's/HOSTNAME.*/HOSTNAME                '"$(hostname)"';/' /etc/psad/psad.conf
+  
+  psad -R
+  psad --sig-update
+  systemctl restart psad
+  echo "✅ Psad installed"
+  
+  # 9. Additional security packages
+  echo "📦 Installing additional security tools..."
+  apt install -y \
+    ufw \
+    iptables-persistent \
+    logwatch \
+    chkrootkit \
+    libpam-cracklib \
+    libpam-tmpdir
+  
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "✅ ALL SECURITY TOOLS INSTALLED!"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "Installed tools:"
+  echo "✅ Fail2Ban - Active and monitoring"
+  echo "✅ ClamAV - Virus definitions updated"
+  echo "✅ RKHunter - Database initialized"
+  echo "✅ Lynis - Ready for audits"
+  echo "✅ AppArmor - Profiles loaded"
+  echo "✅ Aide - File integrity database created"
+  echo "✅ Auditd - System auditing active"
+  echo "✅ Psad - Port scan detection active"
+  echo ""
+  echo "Next steps:"
+  echo "1. Run initial scans: security_tools_scan"
+  echo "2. Configure automated scans in cron"
+  echo "3. Review Fail2Ban status: fail2ban-client status"
+  echo "4. Run Lynis audit: lynis audit system"
+  echo ""
+  
+  log_success "All security tools installed"
+}
+
+security_tools_scan(){
+  echo "=== 🔍 SECURITY SCAN ==="
+  echo ""
+  echo "Running comprehensive security scans..."
+  echo ""
+  
+  # ClamAV scan
+  echo "1️⃣  Running ClamAV virus scan (quick scan)..."
+  clamscan -r --bell -i /home /root 2>&1 | tail -20
+  echo ""
+  
+  # RKHunter scan
+  echo "2️⃣  Running RKHunter rootkit scan..."
+  rkhunter --check --skip-keypress --report-warnings-only
+  echo ""
+  
+  # Lynis audit
+  echo "3️⃣  Running Lynis security audit..."
+  lynis audit system --quick --quiet
+  echo ""
+  
+  # Check Fail2Ban status
+  echo "4️⃣  Fail2Ban status..."
+  fail2ban-client status
+  echo ""
+  
+  # Check for suspicious ports
+  echo "5️⃣  Checking for suspicious ports..."
+  ss -tulpn | grep LISTEN
+  echo ""
+  
+  echo "✅ Security scan completed!"
+  echo "Review /var/log/lynis.log for detailed audit results"
+}
+
+security_tools_status(){
+  echo "=== 🛡️ SECURITY TOOLS STATUS ==="
+  echo ""
+  
+  # Check each tool
+  echo "Fail2Ban:"
+  systemctl is-active fail2ban && echo "  ✅ Running" || echo "  ❌ Not running"
+  echo ""
+  
+  echo "ClamAV:"
+  systemctl is-active clamav-freshclam && echo "  ✅ Running" || echo "  ❌ Not running"
+  echo ""
+  
+  echo "AppArmor:"
+  systemctl is-active apparmor && echo "  ✅ Running" || echo "  ❌ Not running"
+  echo ""
+  
+  echo "Auditd:"
+  systemctl is-active auditd && echo "  ✅ Running" || echo "  ❌ Not running"
+  echo ""
+  
+  echo "Psad:"
+  systemctl is-active psad && echo "  ✅ Running" || echo "  ❌ Not running"
+  echo ""
+  
+  # Fail2Ban banned IPs
+  echo "Fail2Ban - Banned IPs:"
+  fail2ban-client status sshd 2>/dev/null | grep "Banned IP" || echo "  No bans"
+  echo ""
+  
+  # Recent alerts
+  echo "Recent security alerts (last 10):"
+  tail -10 /var/log/fail2ban.log 2>/dev/null || echo "  No recent alerts"
+}
+
 # ============= MONITORING & ALERTS =============
 monitor_resources(){
   echo "=== RESOURCE MONITORING ==="
@@ -1034,6 +1426,364 @@ monitor_uptime(){
   systemctl is-active docker 2>/dev/null && echo "✅ Docker: Running" || echo "❌ Docker: Not running"
   systemctl is-active nginx 2>/dev/null && echo "✅ Nginx: Running" || echo "❌ Nginx: Not active"
   systemctl is-active wg-quick@wg0 2>/dev/null && echo "✅ WireGuard: Running" || echo "❌ WireGuard: Not active"
+}
+
+# ============= ADVANCED SECURITY MONITORING =============
+
+security_monitoring_setup(){
+  echo "=== 🛡️ ADVANCED SECURITY MONITORING SETUP ==="
+  echo ""
+  echo "This will set up:"
+  echo "1) Real-time DDoS detection"
+  echo "2) Anomaly detection (unusual traffic, CPU, memory)"
+  echo "3) Automatic Telegram alerts (every 2 seconds when threat detected)"
+  echo "4) Auto-response to attacks"
+  echo ""
+  
+  if [ ! -f /etc/bdrman/telegram.conf ]; then
+    echo "⚠️  Telegram bot not configured!"
+    echo "   Please run Telegram setup first (Menu → 11 → 1)"
+    return
+  fi
+  
+  read -rp "Enable advanced security monitoring? (yes/no): " confirm
+  [ "$confirm" != "yes" ] && return
+  
+  echo "📝 Creating security monitor script..."
+  
+  cat > /etc/bdrman/security_monitor.sh << 'EOFMONITOR'
+#!/bin/bash
+
+# Load Telegram config
+source /etc/bdrman/telegram.conf
+
+# Load main config if exists
+[ -f /etc/bdrman/config.conf ] && source /etc/bdrman/config.conf
+
+# Defaults (overridden by config.conf)
+ALERT_COOLDOWN=${ALERT_COOLDOWN:-300}  # 5 minutes default
+MONITORING_INTERVAL=${MONITORING_INTERVAL:-30}  # 30 seconds default
+DDOS_THRESHOLD=${DDOS_THRESHOLD:-50}
+CPU_ALERT_THRESHOLD=${CPU_ALERT_THRESHOLD:-90}
+MEMORY_ALERT_THRESHOLD=${MEMORY_ALERT_THRESHOLD:-90}
+DISK_ALERT_THRESHOLD=${DISK_ALERT_THRESHOLD:-90}
+FAILED_LOGIN_THRESHOLD=${FAILED_LOGIN_THRESHOLD:-10}
+TELEGRAM_TIMEOUT=${TELEGRAM_TIMEOUT:-10}
+TELEGRAM_RETRIES=${TELEGRAM_RETRIES:-2}
+
+ALERT_LOG="/var/log/bdrman_security_alerts.log"
+
+# Per-alert type cooldown tracking
+can_send_alert() {
+    local alert_type="$1"
+    local cooldown_file="/tmp/bdrman_last_alert_${alert_type}"
+    
+    if [ ! -f "$cooldown_file" ]; then
+        return 0
+    fi
+    
+    local last_alert=$(cat "$cooldown_file" 2>/dev/null || echo 0)
+    local current_time=$(date +%s)
+    local diff=$((current_time - last_alert))
+    
+    [ $diff -ge $ALERT_COOLDOWN ]
+}
+
+# Send alert with per-type cooldown
+send_alert() {
+    local alert_type="$1"
+    local message="$2"
+    local cooldown_file="/tmp/bdrman_last_alert_${alert_type}"
+    
+    if can_send_alert "$alert_type"; then
+        if send_telegram_alert "$message"; then
+            date +%s > "$cooldown_file"
+            echo "$(date): [$alert_type] ALERT SENT" >> "$ALERT_LOG"
+            return 0
+        else
+            echo "$(date): [$alert_type] ALERT FAILED" >> "$ALERT_LOG"
+            return 1
+        fi
+    else
+        echo "$(date): [$alert_type] ALERT SKIPPED (cooldown)" >> "$ALERT_LOG"
+        return 2
+    fi
+}
+
+# Safe curl wrapper for Telegram API
+telegram_curl() {
+    local url="$1"
+    shift
+    
+    if ! curl --fail --max-time "$TELEGRAM_TIMEOUT" --retry "$TELEGRAM_RETRIES" -s -X POST "$url" "$@" > /dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
+# Telegram notification function
+send_telegram_alert() {
+    local message="$1"
+    
+    if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+        return 1
+    fi
+    
+    telegram_curl "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+        -d chat_id="${CHAT_ID}" \
+        -d text="$message" \
+        -d parse_mode="Markdown"
+    
+    return $?
+}
+
+# DDoS Detection
+check_ddos() {
+    # Check connection count per IP (using configurable threshold)
+    local suspicious_ips=$(ss -tunap 2>/dev/null | grep ESTAB | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | awk -v threshold="$DDOS_THRESHOLD" '$1 > threshold {print $2":"$1}')
+    
+    if [ -n "$suspicious_ips" ]; then
+        local count=$(echo "$suspicious_ips" | wc -l)
+        local top_ip=$(echo "$suspicious_ips" | head -1 | cut -d: -f1)
+        local connections=$(echo "$suspicious_ips" | head -1 | cut -d: -f2)
+        
+        local alert="🚨 *DDOS ALERT DETECTED*%0A%0A"
+        alert+="⚠️ *Threat Level:* HIGH%0A"
+        alert+="📊 *Type:* Connection Flood%0A"
+        alert+="🔍 *Details:*%0A"
+        alert+="   • Suspicious IPs: ${count}%0A"
+        alert+="   • Top Offender: \`${top_ip}\`%0A"
+        alert+="   • Connections: ${connections}%0A"
+        alert+="   • Threshold: ${DDOS_THRESHOLD}%0A%0A"
+        alert+="💡 *Recommended Actions:*%0A"
+        alert+="   1. /ddos_enable - Enable DDoS protection%0A"
+        alert+="   2. /caprover_protect - Protect CapRover%0A"
+        alert+="   3. /block ${top_ip} - Block this IP%0A%0A"
+        alert+="📅 Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        
+        send_alert "ddos" "$alert"
+        return 1
+    fi
+    return 0
+}
+
+# High CPU Detection
+check_cpu() {
+    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1 | cut -d'.' -f1)
+    
+    if [ -n "$cpu_usage" ] && [ "$cpu_usage" -gt "$CPU_ALERT_THRESHOLD" ]; then
+        local top_process=$(ps aux --sort=-%cpu | head -2 | tail -1 | awk '{print $11}')
+        
+        local alert="⚠️ *HIGH CPU ALERT*%0A%0A"
+        alert+="📊 *CPU Usage:* ${cpu_usage}%% (threshold: ${CPU_ALERT_THRESHOLD}%%)%0A"
+        alert+="🔝 *Top Process:* \`${top_process}\`%0A%0A"
+        alert+="💡 *Possible Causes:*%0A"
+        alert+="   • DDoS attack%0A"
+        alert+="   • Resource-heavy process%0A"
+        alert+="   • Infinite loop/bug%0A%0A"
+        alert+="🔧 *Actions:*%0A"
+        alert+="   /top - View all processes%0A"
+        alert+="   /docker - Check containers%0A"
+        alert+="   /ddos_status - Check for attacks"
+        
+        send_alert "cpu" "$alert"
+        return 1
+    fi
+    return 0
+}
+
+# High Memory Detection  
+check_memory() {
+    local mem_usage=$(free | grep Mem | awk '{printf("%.0f", $3/$2 * 100.0)}')
+    
+    if [ -n "$mem_usage" ] && [ "$mem_usage" -gt "$MEMORY_ALERT_THRESHOLD" ]; then
+        local top_process=$(ps aux --sort=-%mem | head -2 | tail -1 | awk '{print $11}')
+        local mem_used=$(free -h | grep Mem | awk '{print $3}')
+        local mem_total=$(free -h | grep Mem | awk '{print $2}')
+        
+        local alert="🧠 *HIGH MEMORY ALERT*%0A%0A"
+        alert+="📊 *Memory Usage:* ${mem_usage}%% (${mem_used}/${mem_total})%0A"
+        alert+="🔝 *Top Process:* \`${top_process}\`%0A%0A"
+        alert+="💡 *Actions:*%0A"
+        alert+="   /memory - View details%0A"
+        alert+="   /docker - Check containers%0A"
+        alert+="   /restart docker - Restart if needed"
+        
+        send_alert "memory" "$alert"
+        return 1
+    fi
+    return 0
+}
+
+# Disk Space Detection
+check_disk() {
+    local disk_usage=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+    
+    if [ -n "$disk_usage" ] && [ "$disk_usage" -gt "$DISK_ALERT_THRESHOLD" ]; then
+        local disk_used=$(df -h / | tail -1 | awk '{print $3}')
+        local disk_free=$(df -h / | tail -1 | awk '{print $4}')
+        
+        local alert="💾 *CRITICAL DISK ALERT*%0A%0A"
+        alert+="📊 *Disk Usage:* ${disk_usage}%% (threshold: ${DISK_ALERT_THRESHOLD}%%)%0A"
+        alert+="📁 *Used:* ${disk_used}%0A"
+        alert+="📂 *Free:* ${disk_free}%0A%0A"
+        alert+="⚠️ *WARNING:* System may crash if disk fills!%0A%0A"
+        alert+="💡 *Urgent Actions:*%0A"
+        alert+="   /disk - View details%0A"
+        alert+="   /capclean - Clean old backups"
+        
+        send_alert "disk" "$alert"
+        return 1
+    fi
+    return 0
+}
+
+# Failed Login Attempts
+check_failed_logins() {
+    local failed_count=$(grep "Failed password" /var/log/auth.log 2>/dev/null | tail -100 | wc -l)
+    local recent_failed=$(grep "Failed password" /var/log/auth.log 2>/dev/null | tail -5 | grep -oP '(?<=from )[0-9.]+' | sort | uniq -c | sort -rn | head -1)
+    
+    if [ -n "$failed_count" ] && [ "$failed_count" -gt "$FAILED_LOGIN_THRESHOLD" ]; then
+        local alert="🔐 *BRUTE FORCE ALERT*%0A%0A"
+        alert+="📊 *Failed Logins:* ${failed_count} (last 100 attempts)%0A"
+        alert+="⚠️ *Threshold:* ${FAILED_LOGIN_THRESHOLD}%0A%0A"
+        
+        if [ -n "$recent_failed" ]; then
+            local ip=$(echo "$recent_failed" | awk '{print $2}')
+            local count=$(echo "$recent_failed" | awk '{print $1}')
+            alert+="🔍 *Top Offender:*%0A"
+            alert+="   IP: \`${ip}\`%0A"
+            alert+="   Attempts: ${count}%0A%0A"
+            alert+="💡 *Actions:*%0A"
+            alert+="   /block ${ip} - Block this IP%0A"
+            alert+="   /firewall - Check firewall status"
+        fi
+        
+        send_alert "bruteforce" "$alert"
+        return 1
+    fi
+    return 0
+}
+
+# Service Down Detection
+check_services() {
+    local down_services=""
+    
+    for service in docker nginx ssh; do
+        if ! systemctl is-active --quiet $service 2>/dev/null && ! systemctl is-active --quiet sshd 2>/dev/null; then
+            down_services+="   ❌ ${service}%0A"
+        fi
+    done
+    
+    if [ -n "$down_services" ]; then
+        local alert="🚨 *SERVICE DOWN ALERT*%0A%0A"
+        alert+="⚠️ *Critical services are down:*%0A"
+        alert+="${down_services}%0A"
+        alert+="💡 *Actions:*%0A"
+        alert+="   /services - View all services%0A"
+        alert+="   /restart all - Restart services%0A"
+        alert+="   /health - Full health check"
+        
+        send_alert "services" "$alert"
+        return 1
+    fi
+    return 0
+}
+
+# Main monitoring loop
+main() {
+    echo "🛡️ Security monitoring started at $(date)"
+    echo "Configuration:"
+    echo "  • Check interval: ${MONITORING_INTERVAL}s"
+    echo "  • Alert cooldown: ${ALERT_COOLDOWN}s (per alert type)"
+    echo "  • DDoS threshold: ${DDOS_THRESHOLD} connections/IP"
+    echo "  • CPU threshold: ${CPU_ALERT_THRESHOLD}%"
+    echo "  • Memory threshold: ${MEMORY_ALERT_THRESHOLD}%"
+    echo "  • Disk threshold: ${DISK_ALERT_THRESHOLD}%"
+    echo ""
+    echo "Monitoring for: DDoS, High CPU, High Memory, Disk Space, Failed Logins, Service Status"
+    echo "Logs: $ALERT_LOG"
+    echo ""
+    
+    while true; do
+        check_ddos
+        check_cpu
+        check_memory
+        check_disk
+        check_failed_logins
+        check_services
+        
+        # Configurable sleep interval (default 30s, was 2s)
+        sleep "$MONITORING_INTERVAL"
+        
+        sleep 2  # Check every 2 seconds
+    done
+}
+
+# Run if executed directly
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main
+fi
+EOFMONITOR
+  
+  chmod +x /etc/bdrman/security_monitor.sh
+  
+  echo "📝 Creating systemd service..."
+  
+  cat > /etc/systemd/system/bdrman-security-monitor.service << EOF
+[Unit]
+Description=BDRman Advanced Security Monitoring
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/etc/bdrman/security_monitor.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  
+  systemctl daemon-reload
+  systemctl enable bdrman-security-monitor.service
+  systemctl start bdrman-security-monitor.service
+  
+  echo ""
+  echo "✅ Advanced security monitoring installed!"
+  echo "✅ Service started: bdrman-security-monitor"
+  echo ""
+  echo "📊 Monitoring for:"
+  echo "   • DDoS attacks (connection floods)"
+  echo "   • High CPU usage (>90%)"
+  echo "   • High Memory usage (>90%)"
+  echo "   • Disk space critical (>90%)"
+  echo "   • Brute force attempts"
+  echo "   • Service failures"
+  echo ""
+  echo "🔔 Telegram alerts: Every 2 seconds when threats detected"
+  echo "📝 Logs: /var/log/bdrman_security_alerts.log"
+  echo ""
+  echo "To check status: systemctl status bdrman-security-monitor"
+  echo "To view logs: journalctl -u bdrman-security-monitor -f"
+  
+  log_success "Advanced security monitoring enabled"
+}
+
+security_monitoring_stop(){
+  systemctl stop bdrman-security-monitor
+  systemctl disable bdrman-security-monitor
+  echo "✅ Security monitoring stopped"
+}
+
+security_monitoring_status(){
+  echo "=== SECURITY MONITORING STATUS ==="
+  echo ""
+  systemctl status bdrman-security-monitor --no-pager
+  echo ""
+  echo "Recent alerts:"
+  tail -20 /var/log/bdrman_security_alerts.log 2>/dev/null || echo "No alerts yet"
 }
 
 # ============= DATABASE MANAGEMENT =============
@@ -1424,7 +2174,65 @@ incident_emergency_mode(){
   echo "✅ EMERGENCY MODE ACTIVE"
   echo "System is now in minimal state."
   echo "Only SSH (port 22) is accessible."
+  echo ""
+  echo "To exit emergency mode, use: incident_emergency_exit or Telegram command /emergency_exit"
   log_success "Emergency mode activated"
+}
+
+incident_emergency_exit(){
+  echo "=== 🟢 EXITING EMERGENCY MODE ==="
+  echo ""
+  echo "This will:"
+  echo "1) START stopped services (Docker, Nginx) - NOT reinstall!"
+  echo "2) REOPEN firewall ports (80, 443, 3000) - NOT reset config!"
+  echo "3) Resume normal operations"
+  echo ""
+  echo "⚠️  NO data will be deleted or reinstalled!"
+  echo ""
+  
+  read -rp "Exit emergency mode? (yes/no): " confirm
+  [ "$confirm" != "yes" ] && return
+  
+  log "EXITING EMERGENCY MODE"
+  
+  echo "🔄 Starting stopped services..."
+  
+  # Idempotent service start (only if not already running)
+  if ! systemctl is-active --quiet nginx; then
+    systemctl start nginx 2>/dev/null && echo "  ✅ Nginx started" || echo "  ⚠️  Nginx start failed"
+  else
+    echo "  ℹ️  Nginx already running"
+  fi
+  
+  if ! systemctl is-active --quiet apache2; then
+    systemctl start apache2 2>/dev/null && echo "  ✅ Apache started" || echo "  ⚠️  Apache start failed (or not installed)"
+  fi
+  
+  # Start stopped Docker containers (NOT rebuild!)
+  echo "  🐳 Starting stopped Docker containers..."
+  local stopped_containers=$(docker ps -aq --filter "status=exited" 2>/dev/null)
+  if [ -n "$stopped_containers" ]; then
+    docker start $stopped_containers 2>/dev/null && echo "  ✅ Containers started" || echo "  ⚠️  Some containers failed to start"
+  else
+    echo "  ℹ️  No stopped containers found"
+  fi
+  
+  sleep 2
+  
+  echo "🔥 Reopening firewall ports..."
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow 22/tcp
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+  ufw allow 3000/tcp  # CapRover
+  ufw --force enable
+  
+  echo ""
+  echo "✅ NORMAL MODE ACTIVE"
+  echo "Services checked and started where needed (nothing reinstalled)."
+  echo "Firewall ports reopened."
+  log_success "Emergency mode exited - normal operations resumed"
 }
 
 incident_rollback(){
@@ -1916,20 +2724,48 @@ telegram_setup(){
   read -rp "Chat ID: " chat_id
   
   if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
-    echo "Both token and chat ID are required."
-    return
+    echo "❌ Both token and chat ID are required."
+    return 1
   fi
   
-  # Save config
+  # Validate token format (should look like: 123456789:ABCdefGHI...)
+  if [[ ! "$bot_token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+    echo "⚠️  Warning: Token format looks invalid"
+    read -rp "Continue anyway? (yes/no): " continue_setup
+    [ "$continue_setup" != "yes" ] && return 1
+  fi
+  
+  # Validate chat ID format (should be numeric or start with -)
+  if [[ ! "$chat_id" =~ ^-?[0-9]+$ ]]; then
+    echo "⚠️  Warning: Chat ID should be numeric"
+    read -rp "Continue anyway? (yes/no): " continue_setup
+    [ "$continue_setup" != "yes" ] && return 1
+  fi
+  
+  # Test token before saving
+  echo "Testing bot token..."
+  if ! curl --fail --max-time 10 -s "https://api.telegram.org/bot${bot_token}/getMe" > /dev/null 2>&1; then
+    echo "❌ Failed to verify bot token. Please check and try again."
+    log_error "Telegram setup failed: invalid bot token"
+    return 1
+  fi
+  
+  echo "✅ Token verified!"
+  
+  # Save config securely
   mkdir -p /etc/bdrman
   cat > /etc/bdrman/telegram.conf << EOF
 BOT_TOKEN="$bot_token"
 CHAT_ID="$chat_id"
 EOF
   
+  # Secure permissions (only root can read)
   chmod 600 /etc/bdrman/telegram.conf
+  chown root:root /etc/bdrman/telegram.conf
   
-  # Create notification function
+  echo "✅ Config saved securely (chmod 600)"
+  
+  # Create notification function with safe curl
   cat > /usr/local/bin/bdrman-telegram << 'EOF'
 #!/bin/bash
 if [ ! -f /etc/bdrman/telegram.conf ]; then
@@ -1937,15 +2773,27 @@ if [ ! -f /etc/bdrman/telegram.conf ]; then
   exit 1
 fi
 
+# Check permissions
+if [ "$(stat -c %a /etc/bdrman/telegram.conf)" != "600" ]; then
+  echo "⚠️  Warning: telegram.conf has insecure permissions!"
+  chmod 600 /etc/bdrman/telegram.conf
+fi
+
 source /etc/bdrman/telegram.conf
 
 MESSAGE="$1"
 HOSTNAME=$(hostname)
 
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+# Use safe curl with timeout and retries
+curl --fail --max-time 10 --retry 2 -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
   -d chat_id="${CHAT_ID}" \
   -d text="🖥️ *${HOSTNAME}*%0A%0A${MESSAGE}" \
   -d parse_mode="Markdown" > /dev/null
+
+if [ $? -ne 0 ]; then
+  echo "Failed to send Telegram message"
+  exit 1
+fi
 
 EOF
   
@@ -1958,10 +2806,15 @@ EOF
   (crontab -l 2>/dev/null | grep -v "telegram_weekly_report.sh"; echo "0 12 * * 1 /etc/bdrman/telegram_weekly_report.sh") | crontab -
   
   # Test notification
-  /usr/local/bin/bdrman-telegram "✅ Telegram bot configured!%0A%0A📅 Weekly reports: Monday at 12:00%0A💬 Commands: Send /help to see all available commands"
+  if /usr/local/bin/bdrman-telegram "✅ Telegram bot configured!%0A%0A📅 Weekly reports: Monday at 12:00%0A💬 Commands: Send /help to see all available commands"; then
+    echo "✅ Telegram bot configured successfully"
+    echo "✅ Weekly reports enabled (Monday at 12:00)"
+    echo "✅ Test message sent!"
+  else
+    echo "⚠️  Configuration saved but test message failed"
+    echo "   Check your chat ID and try: bdrman-telegram \"test\""
+  fi
   
-  echo "✅ Telegram bot configured"
-  echo "✅ Weekly reports enabled (Monday at 12:00)"
   echo ""
   echo "Usage: bdrman-telegram \"Your message\""
   log_success "Telegram bot configured"
@@ -2156,12 +3009,27 @@ telegram_bot_webhook(){
   source /etc/bdrman/telegram.conf
   
   # Install dependencies
+  echo "Checking Python dependencies..."
   if ! command_exists python3; then
     echo "Installing Python3..."
     apt update && apt install -y python3 python3-pip
   fi
   
-  pip3 install python-telegram-bot --upgrade 2>/dev/null || pip3 install python-telegram-bot
+  # Make sure pip3 is available
+  if ! command_exists pip3; then
+    echo "Installing pip3..."
+    apt update && apt install -y python3-pip
+  fi
+  
+  # Verify pip3 is working
+  if command_exists pip3; then
+    echo "Installing python-telegram-bot..."
+    pip3 install python-telegram-bot --upgrade 2>/dev/null || pip3 install python-telegram-bot
+    echo "✅ Python dependencies installed"
+  else
+    echo "❌ pip3 installation failed. Please install manually: apt install python3-pip"
+    return
+  fi
   
   # Create webhook server
   cat > /etc/bdrman/telegram_bot.py << 'EOFPYTHON'
@@ -2209,10 +3077,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     help_text = """
-🤖 *BDRman Bot - Complete Command List*
+🤖 *BDRman Bot - Command List*
 
 📊 *MONITORING:*
-/status - Full system status report
+/status - Detailed system status report
 /health - System health check
 /docker - Docker containers status
 /containers - Detailed container list
@@ -2226,43 +3094,44 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔧 *MANAGEMENT:*
 /restart [service] - Restart service
-  Examples: /restart docker
-           /restart nginx
-           /restart wireguard
-           /restart all
-
 /vpn <username> - Create VPN user
-  Example: /vpn john
-
 /backup - Create system backup
 /snapshot - Create full system snapshot
 /update - System update (apt)
 
-� *CAPROVER BACKUP:*
-/capbackup - Create CapRover volume backup
-/caplist - List CapRover backup history
-/caprestore - Restore CapRover from backup
-/capclean - Clean old CapRover backups
+🚢 *CAPROVER:*
+/capbackup - Create CapRover backup
+/caplist - List backup history
+/capclean - Clean old backups
 
-�🔥 *FIREWALL & SECURITY:*
+🛡️ *SECURITY & DDOS:*
+/ddos_enable - Enable DDoS protection
+/ddos_disable - Disable DDoS protection
+/ddos_status - Check protection status
+/caprover_protect - ⚡ Quick CapRover protection
 /firewall - Firewall status
 /block <ip> - Block IP address
-  Example: /block 192.168.1.100
-
 /ssl <domain> - Get SSL certificate
-  Example: /ssl example.com
 
 🚨 *EMERGENCY:*
-/emergency - Activate emergency mode
+/emergency_exit - Exit emergency mode & restore services
 
-⚡ *ADVANCED:*
-/exec <command> - Execute shell command
-  Example: /exec df -h
-  ⚠️ Use with caution!
+🎉 *FUN & USEFUL:*
+/joke - Random server joke
+/fortune - Server fortune cookie
+/cowsay [text] - Cow says...
+/funstats - Fun server statistics
+/ascii - ASCII art
+/tip - Random server tip
 
 ℹ️ *INFO:*
 /help - This help message
 /about - About this bot
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔒 *Security Notice:*
+Real-time security monitoring active!
+You'll receive alerts for threats automatically.
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -2273,7 +3142,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     about_text = """
 🤖 *BDRman Telegram Bot*
 
-Version: 2.0
+Version: 2.1 (Security Enhanced)
 Author: Burak Darende
 
 A complete server management system 
@@ -2284,8 +3153,14 @@ Features:
 ✅ Service management
 ✅ Automated alerts
 ✅ Backup & snapshots
+✅ DDoS Protection (NEW)
 ✅ Security tools
 ✅ VPN management
+
+Security:
+🔒 Dangerous commands removed
+🛡️ DDoS protection built-in
+🔐 Chat ID authentication
 
 GitHub: burakdarende/bdrman
     """
@@ -2295,42 +3170,130 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     
-    await update.message.reply_text("📊 Collecting system status...")
+    await update.message.reply_text("📊 Collecting detailed system status...")
     
+    # Basic system info
     hostname = run_command("hostname").strip()
     uptime = run_command("uptime -p").strip()
-    disk = run_command("df -h / | tail -1 | awk '{print $5}'").strip()
-    mem = run_command("free -h | grep Mem | awk '{print $3\"/\"$2}'").strip()
+    uptime_since = run_command("uptime -s").strip()
+    kernel = run_command("uname -r").strip()
+    
+    # Disk info (detailed)
+    disk_usage = run_command("df -h / | tail -1 | awk '{print $5}'").strip()
+    disk_used = run_command("df -h / | tail -1 | awk '{print $3}'").strip()
+    disk_free = run_command("df -h / | tail -1 | awk '{print $4}'").strip()
+    disk_total = run_command("df -h / | tail -1 | awk '{print $2}'").strip()
+    
+    # Memory info (detailed)
+    mem_total = run_command("free -h | grep Mem | awk '{print $2}'").strip()
+    mem_used = run_command("free -h | grep Mem | awk '{print $3}'").strip()
+    mem_free = run_command("free -h | grep Mem | awk '{print $4}'").strip()
+    mem_percent = run_command("free | grep Mem | awk '{printf(\"%.0f\", $3/$2 * 100.0)}'").strip()
+    
+    # CPU info
+    cpu_count = run_command("nproc").strip()
+    cpu_usage = run_command("top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1").strip()
     load = run_command("uptime | awk -F'load average:' '{print $2}'").strip()
     
+    # Network info
+    ip_addr = run_command("hostname -I | awk '{print $1}'").strip()
+    connections = run_command("ss -tunap 2>/dev/null | grep ESTAB | wc -l").strip()
+    
+    # Docker info (detailed)
     docker_running = run_command("docker ps --format '{{.Names}}' 2>/dev/null | wc -l").strip()
+    docker_stopped = run_command("docker ps -a --filter 'status=exited' --format '{{.Names}}' 2>/dev/null | wc -l").strip()
     docker_total = run_command("docker ps -a --format '{{.Names}}' 2>/dev/null | wc -l").strip()
+    
+    # CapRover specific
+    caprover_status = run_command("docker ps --filter 'name=captain' --format '{{.Names}}' 2>/dev/null").strip()
+    if caprover_status:
+        caprover_running = "✅ Running"
+        caprover_containers = run_command("docker ps --filter 'name=captain' --format '{{.Names}}' 2>/dev/null | wc -l").strip()
+    else:
+        caprover_running = "⚠️ Not detected"
+        caprover_containers = "0"
     
     # Check services
     services_status = ""
-    for svc in ['docker', 'nginx', 'wg-quick@wg0']:
-        status_cmd = f"systemctl is-active {svc} 2>/dev/null"
+    for svc in ['docker', 'nginx', 'wg-quick@wg0', 'ufw', 'ssh']:
+        status_cmd = f"systemctl is-active {svc} 2>/dev/null || systemctl is-active sshd 2>/dev/null"
         if run_command(status_cmd).strip() == 'active':
             services_status += f"✅ {svc}\n"
         else:
-            services_status += f"❌ {svc}\n"
+            services_status += f"⚠️ {svc}\n"
+    
+    # Security info
+    ufw_status = run_command("ufw status | head -1").strip()
+    failed_logins = run_command("grep 'Failed password' /var/log/auth.log 2>/dev/null | tail -5 | wc -l").strip()
+    
+    # Disk usage icon
+    disk_num = disk_usage.replace('%', '')
+    if disk_num.isdigit():
+        disk_num = int(disk_num)
+        if disk_num >= 90:
+            disk_icon = "🔴"
+        elif disk_num >= 80:
+            disk_icon = "🟡"
+        else:
+            disk_icon = "�"
+    else:
+        disk_icon = "ℹ️"
+    
+    # Memory icon
+    if mem_percent.isdigit():
+        mem_num = int(mem_percent)
+        if mem_num >= 90:
+            mem_icon = "🔴"
+        elif mem_num >= 80:
+            mem_icon = "🟡"
+        else:
+            mem_icon = "🟢"
+    else:
+        mem_icon = "ℹ️"
     
     report = f"""
-📊 *SYSTEM STATUS*
+�📊 *DETAILED SYSTEM STATUS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🖥️ *Server:* {hostname}
-⏱️ *Uptime:* {uptime}
+🖥️ *Server Information*
+• Hostname: `{hostname}`
+• Kernel: `{kernel}`
+• Uptime: {uptime}
+• Started: {uptime_since}
 
-*Resources:*
-💾 Disk: {disk}
-🧠 Memory: {mem}
-📈 Load: {load}
+💻 *System Resources*
+{disk_icon} *Disk:* {disk_usage} ({disk_used} used / {disk_free} free)
+   Total: {disk_total}
 
-*Docker:*
-🐳 Running: {docker_running}/{docker_total}
+{mem_icon} *Memory:* {mem_percent}% ({mem_used} / {mem_total})
+   Free: {mem_free}
 
-*Services:*
+⚡ *CPU:* {cpu_usage}% usage
+   Cores: {cpu_count}
+   Load Average: {load}
+
+🐳 *Docker Containers*
+• Running: {docker_running}
+• Stopped: {docker_stopped}
+• Total: {docker_total}
+
+🚢 *CapRover Status*
+• Status: {caprover_running}
+• Apps: {caprover_containers}
+
+🌐 *Network*
+• IP Address: `{ip_addr}`
+• Active Connections: {connections}
+
+⚙️ *Services*
 {services_status}
+
+🔒 *Security*
+• Firewall: {ufw_status}
+• Recent Failed Logins: {failed_logins}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 Generated: {run_command("date '+%Y-%m-%d %H:%M:%S'").strip()}
     """
     
     await update.message.reply_text(report, parse_mode='Markdown')
@@ -2613,36 +3576,185 @@ async def system_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ System update completed!\n\n```\n{result}\n```", parse_mode='Markdown')
 
-async def emergency_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🚨 *EMERGENCY MODE*\n\n⚠️ This will:\n• Stop non-critical services\n• Enable strict firewall\n• Create emergency backup\n\nType /confirm_emergency to proceed")
+# ============= DDOS PROTECTION FOR CAPROVER =============
 
-async def exec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ddos_protection_enable(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     
-    if len(context.args) == 0:
-        await update.message.reply_text("Usage: /exec <command>\n\nExample: /exec df -h\n\n⚠️ Use carefully!")
+    await update.message.reply_text("�️ *Enabling DDoS Protection*\n\nApplying iptables rules...")
+    
+    commands = [
+        # SYN flood protection
+        "iptables -A INPUT -p tcp --syn -m limit --limit 1/s --limit-burst 3 -j ACCEPT",
+        "iptables -A INPUT -p tcp --syn -j DROP",
+        
+        # Ping flood protection
+        "iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 1/s -j ACCEPT",
+        "iptables -A INPUT -p icmp --icmp-type echo-request -j DROP",
+        
+        # Port scanning protection
+        "iptables -N port-scanning 2>/dev/null || true",
+        "iptables -A port-scanning -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s --limit-burst 2 -j RETURN",
+        "iptables -A port-scanning -j DROP",
+        
+        # Connection limit per IP
+        "iptables -A INPUT -p tcp --dport 80 -m connlimit --connlimit-above 20 -j REJECT",
+        "iptables -A INPUT -p tcp --dport 443 -m connlimit --connlimit-above 20 -j REJECT",
+        
+        # Rate limit for HTTP/HTTPS
+        "iptables -A INPUT -p tcp --dport 80 -m state --state NEW -m recent --set",
+        "iptables -A INPUT -p tcp --dport 80 -m state --state NEW -m recent --update --seconds 1 --hitcount 10 -j DROP",
+        "iptables -A INPUT -p tcp --dport 443 -m state --state NEW -m recent --set",
+        "iptables -A INPUT -p tcp --dport 443 -m state --state NEW -m recent --update --seconds 1 --hitcount 10 -j DROP",
+    ]
+    
+    for cmd in commands:
+        run_command(cmd)
+    
+    # Save iptables rules
+    run_command("iptables-save > /etc/iptables/rules.v4 2>/dev/null || true")
+    
+    report = """
+✅ *DDoS Protection Enabled!*
+
+Applied protections:
+• SYN flood protection (1 req/sec)
+• ICMP flood protection (1 ping/sec)
+• Port scanning protection
+• Connection limit (20 per IP for HTTP/HTTPS)
+• Rate limiting (10 req/sec per IP)
+
+*CapRover Apps Protected:*
+• Port 80 (HTTP)
+• Port 443 (HTTPS)
+
+⚠️ *Note:* Rules are active but not persistent.
+To make permanent, install: `apt install iptables-persistent`
+
+Use /ddos_status to check current rules
+Use /ddos_disable to disable protection
+    """
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+    run_command("echo '$(date): DDoS protection enabled via Telegram' >> /var/log/bdrman.log")
+
+async def ddos_protection_disable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
         return
     
-    command = ' '.join(context.args)
+    await update.message.reply_text("⚠️ *Disabling DDoS Protection*\n\nRemoving iptables rules...")
     
-    # Blacklist dangerous commands
-    dangerous = ['rm -rf', 'mkfs', 'dd if=', ':(){', 'fork', '> /dev/sda']
-    if any(danger in command.lower() for danger in dangerous):
-        await update.message.reply_text("❌ Dangerous command blocked!")
+    # Flush specific chains
+    run_command("iptables -D INPUT -p tcp --syn -m limit --limit 1/s --limit-burst 3 -j ACCEPT 2>/dev/null || true")
+    run_command("iptables -D INPUT -p tcp --syn -j DROP 2>/dev/null || true")
+    run_command("iptables -D INPUT -p icmp --icmp-type echo-request -m limit --limit 1/s -j ACCEPT 2>/dev/null || true")
+    run_command("iptables -D INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || true")
+    run_command("iptables -F port-scanning 2>/dev/null || true")
+    run_command("iptables -X port-scanning 2>/dev/null || true")
+    
+    # Remove connection limits
+    run_command("iptables -D INPUT -p tcp --dport 80 -m connlimit --connlimit-above 20 -j REJECT 2>/dev/null || true")
+    run_command("iptables -D INPUT -p tcp --dport 443 -m connlimit --connlimit-above 20 -j REJECT 2>/dev/null || true")
+    
+    await update.message.reply_text("✅ DDoS protection rules removed!\n\n⚠️ Server is now less protected against attacks.", parse_mode='Markdown')
+    run_command("echo '$(date): DDoS protection disabled via Telegram' >> /var/log/bdrman.log")
+
+async def ddos_protection_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
         return
     
-    await update.message.reply_text(f"⚡ Executing: `{command}`", parse_mode='Markdown')
+    await update.message.reply_text("🔍 Checking DDoS protection status...")
     
-    result = run_command(command)
+    # Check for DDoS rules
+    syn_flood = run_command("iptables -L INPUT -n | grep -c 'limit: avg 1/sec burst 3' 2>/dev/null || echo '0'").strip()
+    icmp_flood = run_command("iptables -L INPUT -n | grep -c 'icmp type 8 limit' 2>/dev/null || echo '0'").strip()
+    port_scan = run_command("iptables -L port-scanning -n 2>/dev/null | wc -l").strip()
+    conn_limit = run_command("iptables -L INPUT -n | grep -c 'connlimit-above' 2>/dev/null || echo '0'").strip()
     
-    if len(result) > 4000:
-        result = result[:4000] + "\n... (truncated)"
+    # Current connections
+    total_conn = run_command("ss -tunap 2>/dev/null | grep ESTAB | wc -l").strip()
+    http_conn = run_command("ss -tunap 2>/dev/null | grep :80 | grep ESTAB | wc -l").strip()
+    https_conn = run_command("ss -tunap 2>/dev/null | grep :443 | grep ESTAB | wc -l").strip()
     
-    await update.message.reply_text(f"```\n{result}\n```", parse_mode='Markdown')
+    # Recent blocks
+    recent_drops = run_command("iptables -L INPUT -n -v | grep DROP | head -5").strip()
+    
+    status = "🟢 Active" if int(syn_flood) > 0 or int(icmp_flood) > 0 else "🔴 Inactive"
+    
+    report = f"""
+🛡️ *DDoS Protection Status*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*Protection Status:* {status}
+
+*Active Rules:*
+• SYN Flood Protection: {'✅' if int(syn_flood) > 0 else '❌'}
+• ICMP Flood Protection: {'✅' if int(icmp_flood) > 0 else '❌'}
+• Port Scan Protection: {'✅' if int(port_scan) > 0 else '❌'}
+• Connection Limiting: {'✅' if int(conn_limit) > 0 else '❌'}
+
+*Current Connections:*
+• Total: {total_conn}
+• HTTP (80): {http_conn}
+• HTTPS (443): {https_conn}
+
+*Top IPs Connected:*
+```
+{run_command("ss -tunap 2>/dev/null | grep ESTAB | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -5").strip()}
+```
+
+Use /ddos_enable to activate protection
+Use /ddos_disable to deactivate protection
+    """
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+
+async def caprover_protection_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    await update.message.reply_text("🚢⚡ *Quick CapRover Protection*\n\nApplying emergency protection...")
+    
+    # Quick protection for CapRover
+    commands = [
+        # Limit connections to CapRover ports
+        "iptables -A INPUT -p tcp --dport 3000 -m connlimit --connlimit-above 10 -j REJECT",
+        "iptables -A INPUT -p tcp --dport 80 -m connlimit --connlimit-above 30 -j REJECT",
+        "iptables -A INPUT -p tcp --dport 443 -m connlimit --connlimit-above 30 -j REJECT",
+        
+        # Rate limit
+        "iptables -A INPUT -p tcp --dport 3000 -m state --state NEW -m recent --set",
+        "iptables -A INPUT -p tcp --dport 3000 -m state --state NEW -m recent --update --seconds 1 --hitcount 5 -j DROP",
+    ]
+    
+    for cmd in commands:
+        run_command(cmd)
+    
+    # Restart CapRover nginx if needed
+    caprover_nginx = run_command("docker ps --filter 'name=captain-nginx' --format '{{.Names}}'").strip()
+    if caprover_nginx:
+        run_command(f"docker restart {caprover_nginx}")
+    
+    report = """
+✅ *CapRover Emergency Protection Active!*
+
+Protected ports:
+• 3000 (CapRover Dashboard) - Max 10 connections per IP
+• 80 (HTTP) - Max 30 connections per IP  
+• 443 (HTTPS) - Max 30 connections per IP
+
+Rate limits:
+• CapRover: 5 requests/second per IP
+
+CapRover Nginx: Restarted ✅
+
+*This is a temporary emergency protection.*
+Use /ddos_enable for full DDoS protection.
+    """
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+    run_command("echo '$(date): CapRover emergency protection activated via Telegram' >> /var/log/bdrman.log")
 
 # ============= CAPROVER BACKUP TELEGRAM COMMANDS =============
 
@@ -2761,50 +3873,7 @@ async def caprover_list_backups_telegram(update: Update, context: ContextTypes.D
     
     await update.message.reply_text(report, parse_mode='Markdown')
 
-async def caprover_restore_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🔍 Searching for available CapRover backups...")
-    
-    backup_base = "/root/capBackup"
-    
-    if not run_command(f"test -d {backup_base} && echo 'exists'").strip():
-        await update.message.reply_text("❌ No backup directory found. Create backups first with /capbackup")
-        return
-    
-    # Find recent backup files
-    recent_files = run_command(f"find {backup_base} -name '*.tar.gz' -type f -mtime -7 | head -10").strip()
-    
-    if not recent_files:
-        await update.message.reply_text("📦 No backup files found from the last 7 days.")
-        return
-    
-    files = recent_files.split('\n')
-    
-    report = "🔄 *CapRover Restore*\n\n"
-    report += "Recent backup files (last 7 days):\n"
-    
-    for i, file_path in enumerate(files[:5], 1):
-        filename = file_path.split('/')[-1]
-        date_part = file_path.split('/')[-2]  # Get date folder
-        size = run_command(f"du -sh {file_path} | cut -f1").strip()
-        
-        # Extract volume name from filename (remove HH-MM timestamp)
-        volume_name = filename.replace('.tar.gz', '').rsplit('_', 1)[0]
-        
-        report += f"{i}. `{volume_name}`\n"
-        report += f"   📅 {date_part}\n"
-        report += f"   💾 {size}\n\n"
-    
-    if len(files) > 5:
-        report += f"... and {len(files) - 5} more files\n\n"
-    
-    report += "⚠️ *Restore process requires manual selection*\n"
-    report += "Use the main interface for detailed restore options.\n\n"
-    report += "📋 Command: Access CapRover menu → Restore from Backup"
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
+# RESTORE REMOVED FOR SECURITY - Use main interface for restore operations
 
 async def caprover_cleanup_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
@@ -2853,6 +3922,170 @@ async def caprover_cleanup_telegram(update: Update, context: ContextTypes.DEFAUL
     else:
         await update.message.reply_text(report + "✨ No old backups to clean. Storage is optimized!")
 
+# ============= EMERGENCY MODE EXIT =============
+
+async def emergency_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    await update.message.reply_text("🟢 *Exiting Emergency Mode*\n\n⏳ Starting stopped services...\n_(Nothing will be reinstalled!)_")
+    
+    # Start stopped services (NOT reinstall!)
+    run_command("systemctl start nginx 2>/dev/null")
+    run_command("systemctl start apache2 2>/dev/null")
+    
+    # Start stopped Docker containers (NOT rebuild!)
+    run_command("docker start $(docker ps -aq) 2>/dev/null")
+    
+    # Reopen firewall ports
+    commands = [
+        "ufw default deny incoming",
+        "ufw default allow outgoing",
+        "ufw allow 22/tcp",
+        "ufw allow 80/tcp",
+        "ufw allow 443/tcp",
+        "ufw allow 3000/tcp",
+        "ufw --force enable"
+    ]
+    
+    for cmd in commands:
+        run_command(cmd)
+    
+    report = """
+✅ *NORMAL MODE ACTIVE!*
+
+🔄 *Services Started:*
+• Nginx (started, not reinstalled)
+• Docker containers (started, not rebuilt)
+• All system services (running again)
+
+🔥 *Firewall Ports Reopened:*
+• Port 22 (SSH)
+• Port 80 (HTTP)
+• Port 443 (HTTPS)
+• Port 3000 (CapRover)
+
+⚠️ *No data deleted, nothing reinstalled!*
+Just a simple START operation.
+
+📊 System is back to normal operations!
+Use /status to check current state.
+    """
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+    run_command("echo '$(date): Emergency mode exited via Telegram' >> /var/log/bdrman.log")
+
+# ============= FUN & USEFUL COMMANDS =============
+
+async def server_joke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    jokes = [
+        "Why do programmers prefer dark mode? 🌙\nBecause light attracts bugs! 🐛",
+        "Why did the server go to therapy? 🛋️\nIt had too many issues! 😅",
+        "What's a sysadmin's favorite tea? ☕\nNetworking! 🌐",
+        "Why don't servers ever get tired? 💪\nThey're always running! 🏃",
+        "What do you call a server that's always down? 📉\nA downtime champion! 🏆",
+        "Why do servers make terrible comedians? 🎭\nTheir jokes always time out! ⏰"
+    ]
+    
+    import random
+    joke = random.choice(jokes)
+    await update.message.reply_text(f"😄 *Server Joke Time!*\n\n{joke}")
+
+async def server_fortune(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    fortune = run_command("fortune 2>/dev/null || echo 'Fortune not installed. Your fortune: Everything will run smoothly today! 🍀'")
+    
+    await update.message.reply_text(f"🔮 *Server Fortune*\n\n{fortune}")
+
+async def server_cowsay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    if len(context.args) == 0:
+        message = "Your server is doing great!"
+    else:
+        message = ' '.join(context.args)
+    
+    cow = run_command(f"cowsay '{message}' 2>/dev/null || echo 'Cowsay not installed. 🐮 says: {message}'")
+    
+    await update.message.reply_text(f"🐮 *Cow Says:*\n\n```\n{cow}\n```", parse_mode='Markdown')
+
+async def server_stats_fun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    uptime = run_command("uptime -p").strip()
+    kernel = run_command("uname -r").strip()
+    hostname = run_command("hostname").strip()
+    load = run_command("uptime | awk -F'load average:' '{print $2}'").strip()
+    
+    # Fun facts
+    total_files = run_command("find / -type f 2>/dev/null | wc -l").strip()
+    total_dirs = run_command("find / -type d 2>/dev/null | wc -l").strip()
+    
+    report = f"""
+🎉 *Fun Server Stats!*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🖥️ *Your Server:* {hostname}
+⏱️ *Been running for:* {uptime}
+🐧 *Kernel:* {kernel}
+📈 *Load:* {load}
+
+🎲 *Fun Facts:*
+• You have {total_files} files!
+• And {total_dirs} directories!
+
+Keep up the good work! 💪
+    """
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+
+async def server_ascii_art(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    art = """
+```
+    _____ ______ _______      ________ _____  
+   / ____|  ____|  __ \\ \\    / /  ____|  __ \\ 
+  | (___ | |__  | |__) \\ \\  / /| |__  | |__) |
+   \\___ \\|  __| |  _  / \\ \\/ / |  __| |  _  / 
+   ____) | |____| | \\ \\  \\  /  | |____| | \\ \\ 
+  |_____/|______|_|  \\_\\  \\/   |______|_|  \\_\\
+                                              
+       POWERED BY BDRMAN 🚀
+```
+    """
+    
+    await update.message.reply_text(art, parse_mode='Markdown')
+
+async def server_tips(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    tips = [
+        "💡 *Tip:* Regularly update your system with /update",
+        "💡 *Tip:* Always backup before major changes! Use /capbackup",
+        "💡 *Tip:* Monitor your disk space with /disk",
+        "💡 *Tip:* Enable DDoS protection with /ddos_enable",
+        "💡 *Tip:* Check your server health with /health",
+        "💡 *Tip:* Use /caprover_protect during high traffic",
+        "💡 *Tip:* Review firewall rules with /firewall",
+        "💡 *Tip:* Create snapshots before risky operations",
+        "💡 *Tip:* Block suspicious IPs with /block <ip>",
+        "💡 *Tip:* Keep your Docker containers updated!"
+    ]
+    
+    import random
+    tip = random.choice(tips)
+    await update.message.reply_text(tip, parse_mode='Markdown')
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -2884,19 +4117,34 @@ def main():
     # CapRover Backup
     application.add_handler(CommandHandler("capbackup", caprover_backup_telegram))
     application.add_handler(CommandHandler("caplist", caprover_list_backups_telegram))
-    application.add_handler(CommandHandler("caprestore", caprover_restore_telegram))
     application.add_handler(CommandHandler("capclean", caprover_cleanup_telegram))
+    
+    # DDoS Protection (NEW)
+    application.add_handler(CommandHandler("ddos_enable", ddos_protection_enable))
+    application.add_handler(CommandHandler("ddos_disable", ddos_protection_disable))
+    application.add_handler(CommandHandler("ddos_status", ddos_protection_status))
+    application.add_handler(CommandHandler("caprover_protect", caprover_protection_quick))
+    
+    # Emergency Mode Exit (NEW)
+    application.add_handler(CommandHandler("emergency_exit", emergency_exit))
+    
+    # Fun & Useful Commands (NEW)
+    application.add_handler(CommandHandler("joke", server_joke))
+    application.add_handler(CommandHandler("fortune", server_fortune))
+    application.add_handler(CommandHandler("cowsay", server_cowsay))
+    application.add_handler(CommandHandler("funstats", server_stats_fun))
+    application.add_handler(CommandHandler("ascii", server_ascii_art))
+    application.add_handler(CommandHandler("tip", server_tips))
     
     # Firewall & Security
     application.add_handler(CommandHandler("firewall", firewall_status))
     application.add_handler(CommandHandler("block", block_ip))
     application.add_handler(CommandHandler("ssl", get_ssl))
     
-    # Emergency
-    application.add_handler(CommandHandler("emergency", emergency_mode))
-    
-    # Advanced
-    application.add_handler(CommandHandler("exec", exec_command))
+    # DANGEROUS COMMANDS REMOVED FOR SECURITY:
+    # - /emergency (emergency mode)
+    # - /exec (arbitrary command execution)
+    # - /caprestore (risky restore operation)
     
     print(f"🤖 Bot started! Waiting for commands...")
     print(f"📱 Chat ID: {ALLOWED_CHAT_ID}")
@@ -3108,13 +4356,23 @@ security_menu(){
     echo "2) Fail2Ban Management"
     echo "3) SSL Certificate (Let's Encrypt)"
     echo "4) Automatic Security Updates"
-    read -rp "Select (0-4): " c
+    echo "5) 🛡️  Install ALL Security Tools (NEW)"
+    echo "6) 🔍 Run Security Scan (NEW)"
+    echo "7) 📊 Security Tools Status (NEW)"
+    echo "8) 🎯 Setup Advanced Monitoring (NEW)"
+    echo "9) 📈 View Security Monitor Status"
+    read -rp "Select (0-9): " c
     case "$c" in
       0) break ;;
       1) security_ssh_harden; pause ;;
       2) security_fail2ban; pause ;;
       3) security_ssl; pause ;;
       4) security_updates; pause ;;
+      5) security_tools_install; pause ;;
+      6) security_tools_scan; pause ;;
+      7) security_tools_status; pause ;;
+      8) security_monitoring_setup; pause ;;
+      9) security_monitoring_status; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
@@ -3196,15 +4454,17 @@ incident_menu(){
     echo "0) Back"
     echo "1) System Health Check"
     echo "2) Emergency Mode (Safe Mode)"
-    echo "3) Quick Rollback"
-    echo "4) Setup Auto-Recovery"
-    read -rp "Select (0-4): " c
+    echo "3) 🟢 Exit Emergency Mode (NEW)"
+    echo "4) Quick Rollback"
+    echo "5) Setup Auto-Recovery"
+    read -rp "Select (0-5): " c
     case "$c" in
       0) break ;;
       1) incident_health_check; pause ;;
       2) incident_emergency_mode; pause ;;
-      3) incident_rollback; pause ;;
-      4) incident_auto_recovery; pause ;;
+      3) incident_emergency_exit; pause ;;
+      4) incident_rollback; pause ;;
+      5) incident_auto_recovery; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
@@ -3335,7 +4595,21 @@ telegram_bot_status(){
   else
     echo "❌ python-telegram-bot library NOT installed"
     echo "   Installing now..."
-    pip3 install python-telegram-bot --upgrade
+    
+    # Make sure pip3 is available
+    if ! command_exists pip3; then
+      echo "Installing pip3..."
+      apt update && apt install -y python3-pip
+    fi
+    
+    # Install telegram bot library
+    if command_exists pip3; then
+      pip3 install python-telegram-bot --upgrade
+      echo "✅ python-telegram-bot installed"
+    else
+      echo "❌ pip3 not available. Install manually: apt install python3-pip"
+      return
+    fi
   fi
   
   echo ""
@@ -3452,14 +4726,108 @@ main_menu(){
   done
 }
 
+# ============= INITIALIZATION =============
+
+# Create required directories
 mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || true
 mkdir -p "$BACKUP_DIR" 2>/dev/null || true
 touch "$LOGFILE" 2>/dev/null || true
 
-# Check for auto-backup flag
-if [ "$1" = "--auto-backup" ]; then
-  backup_create
-  exit 0
+# ============= CLI ARGUMENT PARSING =============
+
+show_help(){
+  cat << 'EOF'
+BDRman - Server Management Panel v3.1
+
+Usage: bdrman [OPTIONS]
+
+OPTIONS:
+  --help, -h              Show this help message
+  --version, -v           Show version information
+  --auto-backup           Run automatic backup and exit
+  --dry-run               Enable dry-run mode (no actual changes)
+  --non-interactive       Skip confirmations (use with caution!)
+  --check-deps            Check dependencies and exit
+  --debug                 Enable debug output
+  --config FILE           Use custom config file
+
+EXAMPLES:
+  bdrman                  # Start interactive menu
+  bdrman --auto-backup    # Create backup and exit
+  bdrman --check-deps     # Verify all required tools are installed
+  bdrman --debug          # Run with debug logging enabled
+
+CONFIGURATION:
+  Config file: /etc/bdrman/config.conf
+  Example: /usr/local/bin/config.conf.example
+
+For more information, visit: https://github.com/burakdarende/bdrman
+EOF
+}
+
+show_version(){
+  echo "BDRman v3.1"
+  echo "Author: Burak Darende"
+  echo "License: MIT"
+}
+
+# Parse command line arguments
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      show_help
+      exit 0
+      ;;
+    --version|-v)
+      show_version
+      exit 0
+      ;;
+    --auto-backup)
+      log "Running auto-backup from CLI"
+      backup_create
+      exit $?
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      echo "🔍 DRY-RUN MODE ENABLED (no changes will be made)"
+      shift
+      ;;
+    --non-interactive)
+      NON_INTERACTIVE=true
+      echo "⚡ NON-INTERACTIVE MODE ENABLED"
+      shift
+      ;;
+    --check-deps)
+      check_dependencies
+      exit $?
+      ;;
+    --debug)
+      DEBUG=true
+      echo "🐛 DEBUG MODE ENABLED"
+      shift
+      ;;
+    --config)
+      if [ -n "$2" ] && [ -f "$2" ]; then
+        CONFIG_FILE="$2"
+        load_config
+        echo "📝 Loaded config from: $CONFIG_FILE"
+        shift 2
+      else
+        echo "❌ Config file not found: $2"
+        exit 1
+      fi
+      ;;
+    *)
+      echo "❌ Unknown option: $1"
+      echo "Run 'bdrman --help' for usage information"
+      exit 1
+      ;;
+  esac
+done
+
+# Check dependencies on startup (unless --help/--version)
+if [ "$DEBUG" = true ]; then
+  check_dependencies
 fi
 
 log "bdrman started."

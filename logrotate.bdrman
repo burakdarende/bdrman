@@ -1,0 +1,55 @@
+# Logrotate configuration for BDRman
+# Install with: sudo cp logrotate.bdrman /etc/logrotate.d/bdrman
+
+/var/log/bdrman.log {
+    # Rotate weekly
+    weekly
+    
+    # Keep 4 weeks of backlogs
+    rotate 4
+    
+    # Don't rotate if empty
+    notifempty
+    
+    # Don't fail if log file is missing
+    missingok
+    
+    # Compress old logs (uses gzip by default)
+    compress
+    
+    # Delay compression until next rotation
+    delaycompress
+    
+    # Create new log file with these permissions
+    create 0640 root root
+    
+    # Run these commands after rotation
+    postrotate
+        # Send HUP signal to syslog to reopen log files
+        /usr/bin/killall -HUP rsyslogd 2>/dev/null || true
+    endscript
+}
+
+/var/log/bdrman_security_alerts.log {
+    # Rotate daily for security logs
+    daily
+    
+    # Keep 30 days
+    rotate 30
+    
+    # Don't rotate if empty
+    notifempty
+    
+    # Don't fail if log file is missing
+    missingok
+    
+    # Compress old logs
+    compress
+    delaycompress
+    
+    # Create new log file
+    create 0640 root root
+    
+    # Maximum size before forcing rotation
+    size 10M
+}

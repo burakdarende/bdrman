@@ -1,0 +1,132 @@
+# BDRman Configuration File
+# Copy this file to /etc/bdrman/config.conf and customize
+# After editing: chmod 600 /etc/bdrman/config.conf
+
+# ================================
+# GENERAL SETTINGS
+# ================================
+
+# Log file location
+LOGFILE="/var/log/bdrman.log"
+
+# Main backup directory
+BACKUP_DIR="/var/backups/bdrman"
+
+# CapRover volumes location
+VOLUMES_DIR="/var/lib/docker/volumes"
+
+# Lock file for preventing concurrent operations
+LOCK_FILE="/var/lock/bdrman.lock"
+
+# ================================
+# MONITORING SETTINGS
+# ================================
+
+# Security monitoring loop frequency (seconds)
+# Default: 30s (was 2s - too aggressive for production)
+MONITORING_INTERVAL=30
+
+# Alert cooldown period (seconds)
+# Prevents Telegram spam - alerts sent max once per cooldown period
+# Default: 300 (5 minutes)
+ALERT_COOLDOWN=300
+
+# DDoS detection threshold (connections per IP)
+DDOS_THRESHOLD=50
+
+# CPU usage alert threshold (percentage)
+CPU_ALERT_THRESHOLD=90
+
+# Memory usage alert threshold (percentage)
+MEMORY_ALERT_THRESHOLD=90
+
+# Disk usage alert threshold (percentage)
+DISK_ALERT_THRESHOLD=90
+
+# Failed login attempts threshold
+FAILED_LOGIN_THRESHOLD=10
+
+# ================================
+# TELEGRAM BOT SETTINGS
+# ================================
+
+# Telegram configuration file location
+TELEGRAM_CONFIG="/etc/bdrman/telegram.conf"
+
+# Telegram bot script location
+TELEGRAM_SCRIPT="/usr/local/bin/bdrman-telegram"
+
+# Curl timeout for Telegram API calls (seconds)
+TELEGRAM_TIMEOUT=10
+
+# Curl retry attempts for failed requests
+TELEGRAM_RETRIES=2
+
+# ================================
+# BACKUP SETTINGS
+# ================================
+
+# Maximum backup retention period (days)
+BACKUP_RETENTION_DAYS=7
+
+# Remote backup settings
+REMOTE_BACKUP_ENABLED=false
+REMOTE_BACKUP_HOST=""
+REMOTE_BACKUP_USER=""
+REMOTE_BACKUP_PATH="/backups"
+
+# ================================
+# SECURITY SETTINGS
+# ================================
+
+# Enable strict mode for critical functions (set -euo pipefail)
+# WARNING: Keep false for interactive menus
+STRICT_MODE=false
+
+# Dry-run mode (test without making changes)
+DRY_RUN=false
+
+# Non-interactive mode (skip confirmations)
+NON_INTERACTIVE=false
+
+# Enable debug logging
+DEBUG=false
+
+# ================================
+# DEPENDENCY CHECKS
+# ================================
+
+# Required commands (checked at startup)
+REQUIRED_COMMANDS="docker tar rsync curl"
+
+# Optional commands (warnings only)
+OPTIONAL_COMMANDS="jq certbot wg-quick fail2ban"
+
+# ================================
+# TIMEOUT SETTINGS
+# ================================
+
+# Default timeout for blocking commands (seconds)
+COMMAND_TIMEOUT=60
+
+# Docker operations timeout
+DOCKER_TIMEOUT=120
+
+# Backup operations timeout
+BACKUP_TIMEOUT=600
+
+# ================================
+# ADVANCED SETTINGS
+# ================================
+
+# iptables-persistent auto-install
+AUTO_INSTALL_IPTABLES_PERSISTENT=true
+
+# Automatic log rotation
+AUTO_LOGROTATE=true
+
+# Enable flock-based concurrency control
+ENABLE_LOCKING=true
+
+# Maximum log file size before rotation (MB)
+MAX_LOG_SIZE=100
