@@ -127,6 +127,509 @@ caprover_restart(){
   fi
 }
 
+caprover_backup(){
+  echo "=== CAPROVER BACKUP SYSTEM ==="
+  echo ""
+  
+  VOLUMES_DIR="/var/lib/docker/volumes"
+  BACKUP_BASE_DIR="/root/capBackup"
+  
+  # Check if volumes directory exists
+  if [ ! -d "$VOLUMES_DIR" ]; then
+    echo "❌ Docker volumes directory not found: $VOLUMES_DIR"
+    echo "   Make sure Docker is installed and CapRover is running."
+    return
+  fi
+  
+  # Create backup base directory
+  mkdir -p "$BACKUP_BASE_DIR"
+  log "Created backup directory: $BACKUP_BASE_DIR"
+  
+  # Create today's backup folder with Turkey timezone (UTC+3)
+  # Format: dd-mm-yyyy for folder, hh-mm for time
+  export TZ='Europe/Istanbul'
+  DATE_FOLDER=$(date +%d-%m-%Y)
+  TIME_STAMP=$(date +%H-%M)
+  BACKUP_DIR_TODAY="$BACKUP_BASE_DIR/$DATE_FOLDER"
+  mkdir -p "$BACKUP_DIR_TODAY"
+  
+  echo "📁 Listing available CapRover volumes..."
+  echo ""
+  
+  # List all volumes
+  VOLUMES=($(ls -1 "$VOLUMES_DIR" 2>/dev/null | grep -E "(captain-|cap-)" | sort))
+  
+  if [ ${#VOLUMES[@]} -eq 0 ]; then
+    echo "⚠️  No CapRover volumes found in $VOLUMES_DIR"
+    echo "   Looking for volumes with 'captain-' or 'cap-' prefix"
+    echo ""
+    echo "All volumes in the directory:"
+    ls -la "$VOLUMES_DIR" 2>/dev/null || echo "Cannot list directory"
+    return
+  fi
+  
+  echo "Found ${#VOLUMES[@]} CapRover volume(s):"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  # Display volumes with sizes
+  for i in "${!VOLUMES[@]}"; do
+    VOLUME="${VOLUMES[$i]}"
+    VOLUME_PATH="$VOLUMES_DIR/$VOLUME/_data"
+    
+    if [ -d "$VOLUME_PATH" ]; then
+      SIZE=$(du -sh "$VOLUME_PATH" 2>/dev/null | cut -f1 || echo "N/A")
+      echo "$(($i + 1)). $VOLUME (Size: $SIZE)"
+    else
+      echo "$(($i + 1)). $VOLUME (⚠️  _data folder not found)"
+    fi
+  done
+  
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "Options:"
+  echo "a) Backup ALL volumes"
+  echo "0) Cancel"
+  echo ""
+  read -rp "Select volume(s) to backup (number, 'a' for all, or '0' to cancel): " choice
+  
+  case "$choice" in
+    0)
+      echo "Backup cancelled."
+      return
+      ;;
+    a|A)
+      echo "🔄 Backing up ALL volumes..."
+      SELECTED_VOLUMES=("${VOLUMES[@]}")
+      ;;
+    *)
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#VOLUMES[@]}" ]; then
+        SELECTED_VOLUME="${VOLUMES[$((choice - 1))]}"
+        echo "🔄 Backing up: $SELECTED_VOLUME"
+        SELECTED_VOLUMES=("$SELECTED_VOLUME")
+      else
+        echo "❌ Invalid selection."
+        return
+      fi
+      ;;
+  esac
+  
+  echo ""
+  echo "Starting backup process..."
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  TOTAL_BACKED_UP=0
+  TOTAL_SIZE=0
+  
+  for VOLUME in "${SELECTED_VOLUMES[@]}"; do
+    echo ""
+    echo "📦 Processing: $VOLUME"
+    
+    VOLUME_PATH="$VOLUMES_DIR/$VOLUME/_data"
+    
+    if [ ! -d "$VOLUME_PATH" ]; then
+      echo "   ⚠️  Skipping - _data directory not found"
+      continue
+    fi
+    
+    # Create backup filename with timestamp
+    BACKUP_FILE="$BACKUP_DIR_TODAY/${VOLUME}_${TIME_STAMP}.tar.gz"
+    
+    echo "   Source: $VOLUME_PATH"
+    echo "   Target: $BACKUP_FILE"
+    
+    # Get volume size before compression
+    VOLUME_SIZE=$(du -sb "$VOLUME_PATH" 2>/dev/null | cut -f1 || echo "0")
+    VOLUME_SIZE_HUMAN=$(du -sh "$VOLUME_PATH" 2>/dev/null | cut -f1 || echo "N/A")
+    
+    echo "   Size: $VOLUME_SIZE_HUMAN"
+    echo "   Compressing..."
+    
+    # Create compressed backup
+    if tar -czf "$BACKUP_FILE" -C "$VOLUMES_DIR/$VOLUME" _data 2>/dev/null; then
+      # Get compressed size
+      COMPRESSED_SIZE=$(du -sh "$BACKUP_FILE" 2>/dev/null | cut -f1 || echo "N/A")
+      
+      echo "   ✅ Success! Compressed to: $COMPRESSED_SIZE"
+      
+      # Add to totals
+      TOTAL_BACKED_UP=$((TOTAL_BACKED_UP + 1))
+      TOTAL_SIZE=$((TOTAL_SIZE + VOLUME_SIZE))
+      
+      log_success "CapRover backup created: $BACKUP_FILE (Original: $VOLUME_SIZE_HUMAN, Compressed: $COMPRESSED_SIZE)"
+      
+    else
+      echo "   ❌ Failed to create backup!"
+      log_error "CapRover backup failed: $VOLUME"
+    fi
+  done
+  
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "🎯 BACKUP SUMMARY"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "✅ Volumes backed up: $TOTAL_BACKED_UP/${#SELECTED_VOLUMES[@]}"
+  
+  if [ $TOTAL_SIZE -gt 0 ]; then
+    TOTAL_SIZE_HUMAN=$(echo $TOTAL_SIZE | awk '{
+      if ($1 >= 1024^3) printf "%.1f GB", $1/(1024^3)
+      else if ($1 >= 1024^2) printf "%.1f MB", $1/(1024^2)  
+      else if ($1 >= 1024) printf "%.1f KB", $1/1024
+      else printf "%d bytes", $1
+    }')
+    echo "📊 Total original size: $TOTAL_SIZE_HUMAN"
+  fi
+  
+  echo "📁 Backup location: $BACKUP_DIR_TODAY"
+  echo "📅 Date: $(TZ='Europe/Istanbul' date '+%d/%m/%Y %H:%M')"
+  echo "🕒 Timestamp: $TIME_STAMP"
+  
+  # Show backup folder contents
+  echo ""
+  echo "📋 Created backup files:"
+  ls -lh "$BACKUP_DIR_TODAY"/*.tar.gz 2>/dev/null | while read -r line; do
+    echo "   $line"
+  done
+  
+  log_success "CapRover backup session completed: $TOTAL_BACKED_UP volumes backed up"
+}
+
+caprover_list_backups(){
+  echo "=== CAPROVER BACKUP HISTORY ==="
+  echo ""
+  
+  BACKUP_BASE_DIR="/root/capBackup"
+  
+  if [ ! -d "$BACKUP_BASE_DIR" ]; then
+    echo "📁 No backups found. Backup directory doesn't exist yet."
+    echo "   Create your first backup using the backup option."
+    return
+  fi
+  
+  echo "📁 Backup directory: $BACKUP_BASE_DIR"
+  echo ""
+  
+  # List date folders (dd-mm-yyyy format)
+  DATE_FOLDERS=($(ls -1 "$BACKUP_BASE_DIR" 2>/dev/null | grep -E "^[0-9]{2}-[0-9]{2}-[0-9]{4}$" | sort -r))
+  
+  if [ ${#DATE_FOLDERS[@]} -eq 0 ]; then
+    echo "📅 No backup dates found."
+    return
+  fi
+  
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "📅 BACKUP HISTORY (${#DATE_FOLDERS[@]} days)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  TOTAL_BACKUPS=0
+  TOTAL_SIZE=0
+  
+  for DATE_FOLDER in "${DATE_FOLDERS[@]}"; do
+    FOLDER_PATH="$BACKUP_BASE_DIR/$DATE_FOLDER"
+    
+    if [ -d "$FOLDER_PATH" ]; then
+      # Count backup files
+      BACKUP_COUNT=$(ls -1 "$FOLDER_PATH"/*.tar.gz 2>/dev/null | wc -l)
+      
+      if [ "$BACKUP_COUNT" -gt 0 ]; then
+        # Calculate folder size
+        FOLDER_SIZE=$(du -sh "$FOLDER_PATH" 2>/dev/null | cut -f1)
+        FOLDER_SIZE_BYTES=$(du -sb "$FOLDER_PATH" 2>/dev/null | cut -f1 || echo "0")
+        
+        echo "📅 $DATE_FOLDER"
+        echo "   📦 Backups: $BACKUP_COUNT files"
+        echo "   💾 Size: $FOLDER_SIZE"
+        
+        # List individual backups
+        ls -lh "$FOLDER_PATH"/*.tar.gz 2>/dev/null | while read -r line; do
+          filename=$(echo "$line" | awk '{print $9}' | xargs basename)
+          size=$(echo "$line" | awk '{print $5}')
+          echo "      └─ $filename ($size)"
+        done
+        
+        echo ""
+        
+        TOTAL_BACKUPS=$((TOTAL_BACKUPS + BACKUP_COUNT))
+        TOTAL_SIZE=$((TOTAL_SIZE + FOLDER_SIZE_BYTES))
+      fi
+    fi
+  done
+  
+  if [ $TOTAL_BACKUPS -gt 0 ]; then
+    TOTAL_SIZE_HUMAN=$(echo $TOTAL_SIZE | awk '{
+      if ($1 >= 1024^3) printf "%.1f GB", $1/(1024^3)
+      else if ($1 >= 1024^2) printf "%.1f MB", $1/(1024^2)  
+      else if ($1 >= 1024) printf "%.1f KB", $1/1024
+      else printf "%d bytes", $1
+    }')
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "📊 TOTAL SUMMARY"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "📦 Total backup files: $TOTAL_BACKUPS"
+    echo "💾 Total size: $TOTAL_SIZE_HUMAN"
+    echo "📅 Backup days: ${#DATE_FOLDERS[@]}"
+    echo "📁 Backup path: $BACKUP_BASE_DIR"
+  fi
+}
+
+caprover_restore_backup(){
+  echo "=== CAPROVER RESTORE FROM BACKUP ==="
+  echo ""
+  
+  BACKUP_BASE_DIR="/root/capBackup"
+  VOLUMES_DIR="/var/lib/docker/volumes"
+  
+  if [ ! -d "$BACKUP_BASE_DIR" ]; then
+    echo "❌ No backups found. Backup directory doesn't exist."
+    return
+  fi
+  
+  if [ ! -d "$VOLUMES_DIR" ]; then
+    echo "❌ Docker volumes directory not found: $VOLUMES_DIR"
+    return
+  fi
+  
+  echo "🔍 Searching for available backups..."
+  
+  # Find all backup files
+  BACKUP_FILES=()
+  while IFS= read -r -d '' file; do
+    BACKUP_FILES+=("$file")
+  done < <(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -type f -print0 2>/dev/null)
+  
+  if [ ${#BACKUP_FILES[@]} -eq 0 ]; then
+    echo "📦 No backup files found."
+    return
+  fi
+  
+  echo "Found ${#BACKUP_FILES[@]} backup file(s):"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  
+  # Display backup files with details
+  for i in "${!BACKUP_FILES[@]}"; do
+    FILE="${BACKUP_FILES[$i]}"
+    FILENAME=$(basename "$FILE")
+    DATE_PART=$(dirname "$FILE" | xargs basename)
+    SIZE=$(du -sh "$FILE" 2>/dev/null | cut -f1)
+    MODIFIED=$(stat -c "%y" "$FILE" 2>/dev/null | cut -d' ' -f1,2 | cut -d'.' -f1)
+    
+    echo "$(($i + 1)). $FILENAME"
+    echo "    📅 Date: $DATE_PART"
+    echo "    💾 Size: $SIZE"
+    echo "    🕒 Modified: $MODIFIED"
+    echo ""
+  done
+  
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "0) Cancel"
+  echo ""
+  read -rp "Select backup file to restore (1-${#BACKUP_FILES[@]}): " choice
+  
+  if [[ "$choice" == "0" ]]; then
+    echo "Restore cancelled."
+    return
+  fi
+  
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#BACKUP_FILES[@]}" ]; then
+    echo "❌ Invalid selection."
+    return
+  fi
+  
+  SELECTED_FILE="${BACKUP_FILES[$((choice - 1))]}"
+  FILENAME=$(basename "$SELECTED_FILE")
+  
+  # Extract volume name from filename (remove timestamp HH-MM and extension)
+  VOLUME_NAME=$(echo "$FILENAME" | sed 's/_[0-9][0-9]-[0-9][0-9]\.tar\.gz$//')
+  
+  echo ""
+  echo "📦 Selected backup: $FILENAME"
+  echo "🔄 Target volume: $VOLUME_NAME"
+  echo "📁 Volume path: $VOLUMES_DIR/$VOLUME_NAME"
+  echo ""
+  
+  # Check if volume exists
+  if [ -d "$VOLUMES_DIR/$VOLUME_NAME" ]; then
+    echo "⚠️  WARNING: Volume '$VOLUME_NAME' already exists!"
+    echo "   This will OVERWRITE the existing volume data."
+    echo ""
+    read -rp "Do you want to continue? Type 'YES' to confirm: " confirm
+    
+    if [ "$confirm" != "YES" ]; then
+      echo "Restore cancelled."
+      return
+    fi
+    
+    # Create backup of existing volume with Turkey time
+    echo "🔄 Creating safety backup of existing volume..."
+    export TZ='Europe/Istanbul'
+    SAFETY_BACKUP="$BACKUP_BASE_DIR/safety_backup_${VOLUME_NAME}_$(date +%d%m%Y_%H%M).tar.gz"
+    tar -czf "$SAFETY_BACKUP" -C "$VOLUMES_DIR/$VOLUME_NAME" _data 2>/dev/null
+    echo "   ✅ Safety backup created: $SAFETY_BACKUP"
+    
+    # Remove existing data
+    echo "🗑️  Removing existing volume data..."
+    rm -rf "$VOLUMES_DIR/$VOLUME_NAME/_data"/*
+  else
+    echo "📁 Volume doesn't exist. Creating new volume structure..."
+    mkdir -p "$VOLUMES_DIR/$VOLUME_NAME"
+  fi
+  
+  echo ""
+  echo "🔄 Restoring from backup..."
+  echo "   Source: $SELECTED_FILE"
+  echo "   Target: $VOLUMES_DIR/$VOLUME_NAME/"
+  
+  # Extract backup
+  if tar -xzf "$SELECTED_FILE" -C "$VOLUMES_DIR/$VOLUME_NAME/" 2>/dev/null; then
+    echo "   ✅ Extraction successful!"
+    
+    # Set proper permissions
+    echo "🔐 Setting permissions..."
+    chown -R root:root "$VOLUMES_DIR/$VOLUME_NAME"
+    
+    # Verify restoration
+    if [ -d "$VOLUMES_DIR/$VOLUME_NAME/_data" ]; then
+      RESTORED_SIZE=$(du -sh "$VOLUMES_DIR/$VOLUME_NAME/_data" 2>/dev/null | cut -f1)
+      echo "   📊 Restored size: $RESTORED_SIZE"
+      
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "✅ RESTORE COMPLETED SUCCESSFULLY!"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "📦 Volume: $VOLUME_NAME"
+      echo "📁 Location: $VOLUMES_DIR/$VOLUME_NAME/_data"
+      echo "💾 Size: $RESTORED_SIZE"
+      echo "🕒 Restored: $(date '+%Y-%m-%d %H:%M:%S')"
+      echo ""
+      echo "⚠️  NOTE: You may need to restart the related Docker container"
+      echo "          for the changes to take effect."
+      
+      log_success "CapRover volume restored: $VOLUME_NAME from $FILENAME"
+      
+    else
+      echo "   ❌ Verification failed - _data directory not found after extraction"
+      log_error "CapRover restore verification failed: $VOLUME_NAME"
+    fi
+    
+  else
+    echo "   ❌ Extraction failed!"
+    log_error "CapRover restore failed: $SELECTED_FILE"
+  fi
+}
+
+caprover_cleanup_backups(){
+  echo "=== CAPROVER BACKUP CLEANUP ==="
+  echo ""
+  
+  BACKUP_BASE_DIR="/root/capBackup"
+  
+  if [ ! -d "$BACKUP_BASE_DIR" ]; then
+    echo "📁 No backup directory found."
+    return
+  fi
+  
+  echo "🔍 Analyzing backup storage..."
+  
+  # Get total backup size
+  TOTAL_SIZE=$(du -sh "$BACKUP_BASE_DIR" 2>/dev/null | cut -f1)
+  TOTAL_FILES=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -type f 2>/dev/null | wc -l)
+  
+  echo "📊 Current backup usage:"
+  echo "   💾 Total size: $TOTAL_SIZE"
+  echo "   📦 Total files: $TOTAL_FILES"
+  echo "   📁 Location: $BACKUP_BASE_DIR"
+  echo ""
+  
+  if [ "$TOTAL_FILES" -eq 0 ]; then
+    echo "No backup files to clean up."
+    return
+  fi
+  
+  echo "🧹 Cleanup options:"
+  echo "1) Delete backups older than 30 days"
+  echo "2) Delete backups older than 7 days"
+  echo "3) Keep only last 5 days of backups"
+  echo "4) Delete specific date folder"
+  echo "5) Cancel"
+  echo ""
+  read -rp "Select cleanup option (1-5): " choice
+  
+  case "$choice" in
+    1)
+      echo "🗑️  Deleting backups older than 30 days..."
+      DELETED=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -type f -mtime +30 -delete -print 2>/dev/null | wc -l)
+      echo "   ✅ Deleted $DELETED files"
+      ;;
+    2)
+      echo "🗑️  Deleting backups older than 7 days..."
+      DELETED=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -type f -mtime +7 -delete -print 2>/dev/null | wc -l)
+      echo "   ✅ Deleted $DELETED files"
+      ;;
+    3)
+      echo "🗑️  Keeping only last 5 days of backups..."
+      # Get date folders, sort them, keep last 5 (dd-mm-yyyy format)
+      DATE_FOLDERS=($(ls -1 "$BACKUP_BASE_DIR" 2>/dev/null | grep -E "^[0-9]{2}-[0-9]{2}-[0-9]{4}$" | sort -r))
+      
+      if [ ${#DATE_FOLDERS[@]} -gt 5 ]; then
+        for ((i=5; i<${#DATE_FOLDERS[@]}; i++)); do
+          FOLDER_TO_DELETE="$BACKUP_BASE_DIR/${DATE_FOLDERS[$i]}"
+          if [ -d "$FOLDER_TO_DELETE" ]; then
+            rm -rf "$FOLDER_TO_DELETE"
+            echo "   🗑️  Deleted folder: ${DATE_FOLDERS[$i]}"
+          fi
+        done
+      else
+        echo "   ℹ️  Less than 5 days of backups found, nothing to delete."
+      fi
+      ;;
+    4)
+      echo "Available backup dates (dd-mm-yyyy):"
+      ls -1 "$BACKUP_BASE_DIR" 2>/dev/null | grep -E "^[0-9]{2}-[0-9]{2}-[0-9]{4}$" | sort -r
+      echo ""
+      read -rp "Enter date to delete (DD-MM-YYYY): " date_to_delete
+      
+      if [[ "$date_to_delete" =~ ^[0-9]{2}-[0-9]{2}-[0-9]{4}$ ]]; then
+        FOLDER_TO_DELETE="$BACKUP_BASE_DIR/$date_to_delete"
+        if [ -d "$FOLDER_TO_DELETE" ]; then
+          read -rp "⚠️  Delete all backups from $date_to_delete? (yes/no): " confirm
+          if [ "$confirm" = "yes" ]; then
+            rm -rf "$FOLDER_TO_DELETE"
+            echo "   ✅ Deleted backup folder: $date_to_delete"
+            log "Deleted CapRover backup folder: $date_to_delete"
+          else
+            echo "Deletion cancelled."
+          fi
+        else
+          echo "❌ Backup folder for $date_to_delete not found."
+        fi
+      else
+        echo "❌ Invalid date format. Use DD-MM-YYYY"
+      fi
+      ;;
+    5)
+      echo "Cleanup cancelled."
+      return
+      ;;
+    *)
+      echo "❌ Invalid choice."
+      return
+      ;;
+  esac
+  
+  # Show updated statistics
+  echo ""
+  echo "📊 Updated backup usage:"
+  NEW_TOTAL_SIZE=$(du -sh "$BACKUP_BASE_DIR" 2>/dev/null | cut -f1)
+  NEW_TOTAL_FILES=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -type f 2>/dev/null | wc -l)
+  echo "   💾 Total size: $NEW_TOTAL_SIZE (was: $TOTAL_SIZE)"
+  echo "   📦 Total files: $NEW_TOTAL_FILES (was: $TOTAL_FILES)"
+  
+  # Clean up empty date folders
+  find "$BACKUP_BASE_DIR" -type d -empty -delete 2>/dev/null
+  
+  log_success "CapRover backup cleanup completed"
+}
+
 # ============= FIREWALL (UFW) =============
 fw_status(){ ufw status verbose 2>/dev/null || echo "UFW not installed."; }
 fw_enable(){ ufw enable && echo "Firewall enabled." || echo "Enable failed."; }
@@ -1735,7 +2238,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /snapshot - Create full system snapshot
 /update - System update (apt)
 
-🔥 *FIREWALL & SECURITY:*
+� *CAPROVER BACKUP:*
+/capbackup - Create CapRover volume backup
+/caplist - List CapRover backup history
+/caprestore - Restore CapRover from backup
+/capclean - Clean old CapRover backups
+
+�🔥 *FIREWALL & SECURITY:*
 /firewall - Firewall status
 /block <ip> - Block IP address
   Example: /block 192.168.1.100
@@ -2135,6 +2644,215 @@ async def exec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"```\n{result}\n```", parse_mode='Markdown')
 
+# ============= CAPROVER BACKUP TELEGRAM COMMANDS =============
+
+async def caprover_backup_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    await update.message.reply_text("🚢 Starting CapRover backup process...")
+    
+    # Check if volumes directory exists
+    volumes_dir = "/var/lib/docker/volumes"
+    if not run_command(f"test -d {volumes_dir} && echo 'exists'").strip():
+        await update.message.reply_text("❌ Docker volumes directory not found. Make sure Docker and CapRover are installed.")
+        return
+    
+    # List CapRover volumes
+    volumes_list = run_command("ls -1 /var/lib/docker/volumes/ | grep -E '(captain-|cap-)' | head -10").strip()
+    
+    if not volumes_list:
+        await update.message.reply_text("⚠️ No CapRover volumes found with 'captain-' or 'cap-' prefix.")
+        return
+    
+    volumes = volumes_list.split('\n')
+    
+    # Create backup directory with Turkey timezone
+    backup_base = "/root/capBackup"
+    # Set Turkey timezone and format as dd-mm-yyyy + hh-mm
+    date_folder = subprocess.run("TZ='Europe/Istanbul' date +%d-%m-%Y", shell=True, capture_output=True, text=True).stdout.strip()
+    time_stamp = subprocess.run("TZ='Europe/Istanbul' date +%H-%M", shell=True, capture_output=True, text=True).stdout.strip()
+    backup_dir = f"{backup_base}/{date_folder}"
+    
+    run_command(f"mkdir -p {backup_dir}")
+    
+    await update.message.reply_text(f"📦 Found {len(volumes)} CapRover volume(s):\n{chr(10).join(f'• {v}' for v in volumes[:5])}")
+    
+    if len(volumes) > 5:
+        await update.message.reply_text(f"... and {len(volumes) - 5} more volumes")
+    
+    await update.message.reply_text("🔄 Creating backups for all volumes...")
+    
+    backed_up = 0
+    total_size = 0
+    
+    for volume in volumes:
+        volume_path = f"/var/lib/docker/volumes/{volume}/_data"
+        
+        if not run_command(f"test -d {volume_path} && echo 'exists'").strip():
+            continue
+            
+        backup_file = f"{backup_dir}/{volume}_{time_stamp}.tar.gz"
+        
+        # Create backup
+        result = run_command(f"tar -czf {backup_file} -C /var/lib/docker/volumes/{volume} _data 2>&1")
+        
+        if "error" not in result.lower() and run_command(f"test -f {backup_file} && echo 'exists'").strip():
+            size = run_command(f"du -sh {backup_file} | cut -f1").strip()
+            backed_up += 1
+        else:
+            # Remove failed backup file
+            run_command(f"rm -f {backup_file}")
+    
+    if backed_up > 0:
+        total_dir_size = run_command(f"du -sh {backup_dir} | cut -f1").strip()
+        
+        await update.message.reply_text(
+            f"✅ *CapRover Backup Completed!*\n\n"
+            f"📦 Volumes backed up: {backed_up}/{len(volumes)}\n"
+            f"💾 Total size: {total_dir_size}\n"
+            f"📁 Location: `{backup_dir}`\n"
+            f"📅 Date: {date_folder} {time_stamp.replace('-', ':')}\n\n"
+            f"Use /caplist to view backup history",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text("❌ No volumes were successfully backed up!")
+
+async def caprover_list_backups_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    backup_base = "/root/capBackup"
+    
+    if not run_command(f"test -d {backup_base} && echo 'exists'").strip():
+        await update.message.reply_text("📁 No CapRover backups found. Create your first backup with /capbackup")
+        return
+    
+    # Get date folders (dd-mm-yyyy format)
+    date_folders = run_command(f"ls -1 {backup_base} | grep -E '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$' | sort -r | head -10").strip()
+    
+    if not date_folders:
+        await update.message.reply_text("📅 No backup dates found.")
+        return
+    
+    folders = date_folders.split('\n')
+    total_size = run_command(f"du -sh {backup_base} | cut -f1").strip()
+    total_files = run_command(f"find {backup_base} -name '*.tar.gz' | wc -l").strip()
+    
+    report = f"📋 *CapRover Backup History*\n\n"
+    report += f"💾 Total size: {total_size}\n"
+    report += f"📦 Total files: {total_files}\n"
+    report += f"📅 Backup days: {len(folders)}\n\n"
+    
+    report += "*Recent backups:*\n"
+    
+    for folder in folders[:5]:  # Show last 5 days
+        folder_path = f"{backup_base}/{folder}"
+        folder_size = run_command(f"du -sh {folder_path} | cut -f1").strip()
+        file_count = run_command(f"ls -1 {folder_path}/*.tar.gz 2>/dev/null | wc -l").strip()
+        
+        report += f"📅 `{folder}` ({file_count} files, {folder_size})\n"
+    
+    if len(folders) > 5:
+        report += f"\n... and {len(folders) - 5} more days"
+    
+    report += f"\n📁 Path: `{backup_base}`"
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+
+async def caprover_restore_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    await update.message.reply_text("🔍 Searching for available CapRover backups...")
+    
+    backup_base = "/root/capBackup"
+    
+    if not run_command(f"test -d {backup_base} && echo 'exists'").strip():
+        await update.message.reply_text("❌ No backup directory found. Create backups first with /capbackup")
+        return
+    
+    # Find recent backup files
+    recent_files = run_command(f"find {backup_base} -name '*.tar.gz' -type f -mtime -7 | head -10").strip()
+    
+    if not recent_files:
+        await update.message.reply_text("📦 No backup files found from the last 7 days.")
+        return
+    
+    files = recent_files.split('\n')
+    
+    report = "🔄 *CapRover Restore*\n\n"
+    report += "Recent backup files (last 7 days):\n"
+    
+    for i, file_path in enumerate(files[:5], 1):
+        filename = file_path.split('/')[-1]
+        date_part = file_path.split('/')[-2]  # Get date folder
+        size = run_command(f"du -sh {file_path} | cut -f1").strip()
+        
+        # Extract volume name from filename (remove HH-MM timestamp)
+        volume_name = filename.replace('.tar.gz', '').rsplit('_', 1)[0]
+        
+        report += f"{i}. `{volume_name}`\n"
+        report += f"   📅 {date_part}\n"
+        report += f"   💾 {size}\n\n"
+    
+    if len(files) > 5:
+        report += f"... and {len(files) - 5} more files\n\n"
+    
+    report += "⚠️ *Restore process requires manual selection*\n"
+    report += "Use the main interface for detailed restore options.\n\n"
+    report += "📋 Command: Access CapRover menu → Restore from Backup"
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+
+async def caprover_cleanup_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    
+    backup_base = "/root/capBackup"
+    
+    if not run_command(f"test -d {backup_base} && echo 'exists'").strip():
+        await update.message.reply_text("📁 No backup directory found.")
+        return
+    
+    await update.message.reply_text("🧹 Analyzing CapRover backup storage...")
+    
+    # Get current stats
+    total_size = run_command(f"du -sh {backup_base} | cut -f1").strip()
+    total_files = run_command(f"find {backup_base} -name '*.tar.gz' | wc -l").strip()
+    
+    # Clean backups older than 30 days
+    old_files_count = run_command(f"find {backup_base} -name '*.tar.gz' -type f -mtime +30 | wc -l").strip()
+    
+    report = f"📊 *Current backup usage:*\n"
+    report += f"💾 Total size: {total_size}\n"
+    report += f"📦 Total files: {total_files}\n"
+    report += f"🗑️ Files older than 30 days: {old_files_count}\n\n"
+    
+    if int(old_files_count) > 0:
+        await update.message.reply_text(report + "🔄 Cleaning old backups...")
+        
+        # Delete old files
+        deleted = run_command(f"find {backup_base} -name '*.tar.gz' -type f -mtime +30 -delete -print | wc -l").strip()
+        
+        # Clean empty directories
+        run_command(f"find {backup_base} -type d -empty -delete")
+        
+        # Get new stats
+        new_total_size = run_command(f"du -sh {backup_base} | cut -f1").strip()
+        new_total_files = run_command(f"find {backup_base} -name '*.tar.gz' | wc -l").strip()
+        
+        cleanup_report = f"✅ *Cleanup completed!*\n\n"
+        cleanup_report += f"🗑️ Deleted files: {deleted}\n"
+        cleanup_report += f"💾 Size: {new_total_size} (was {total_size})\n"
+        cleanup_report += f"📦 Files: {new_total_files} (was {total_files})\n\n"
+        cleanup_report += "🧹 Cleaned up backups older than 30 days"
+        
+        await update.message.reply_text(cleanup_report, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(report + "✨ No old backups to clean. Storage is optimized!")
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -2162,6 +2880,12 @@ def main():
     application.add_handler(CommandHandler("backup", create_backup))
     application.add_handler(CommandHandler("snapshot", create_snapshot))
     application.add_handler(CommandHandler("update", system_update))
+    
+    # CapRover Backup
+    application.add_handler(CommandHandler("capbackup", caprover_backup_telegram))
+    application.add_handler(CommandHandler("caplist", caprover_list_backups_telegram))
+    application.add_handler(CommandHandler("caprestore", caprover_restore_telegram))
+    application.add_handler(CommandHandler("capclean", caprover_cleanup_telegram))
     
     # Firewall & Security
     application.add_handler(CommandHandler("firewall", firewall_status))
@@ -2279,14 +3003,20 @@ caprover_menu(){
     echo "1) Check CapRover Container"
     echo "2) View Logs (last 200 lines)"
     echo "3) Restart CapRover"
-    echo "4) Deploy App (custom hook)"
-    read -rp "Select (0-4): " c
+    echo "4) 🗂️  CapRover Backup System"
+    echo "5) 📋 List Backup History"
+    echo "6) 🔄 Restore from Backup"
+    echo "7) 🧹 Cleanup Old Backups"
+    read -rp "Select (0-7): " c
     case "$c" in
       0) break ;;
       1) caprover_check; pause ;;
       2) caprover_logs; pause ;;
       3) caprover_restart; pause ;;
-      4) echo "Custom deploy logic here."; pause ;;
+      4) caprover_backup; pause ;;
+      5) caprover_list_backups; pause ;;
+      6) caprover_restore_backup; pause ;;
+      7) caprover_cleanup_backups; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
