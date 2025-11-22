@@ -874,8 +874,25 @@ caprover_cleanup_backups(){
 
 # ============= FIREWALL (UFW) =============
 fw_status(){ ufw status verbose 2>/dev/null || echo "UFW not installed."; }
-fw_enable(){ ufw enable && echo "Firewall enabled." || echo "Enable failed."; }
-fw_disable(){ ufw disable && echo "Firewall disabled." || echo "Disable failed."; }
+
+fw_enable(){
+  echo "⚠️  Command may disrupt existing ssh connections. Proceed with operation (y|n)?"
+  read -rp "Enable firewall? (y/n): " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    ufw --force enable && success "Firewall enabled." || error "Enable failed."
+  else
+    warning "Aborted"
+  fi
+}
+
+fw_disable(){
+  read -rp "Disable firewall? (y/n): " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    ufw disable && success "Firewall disabled." || error "Disable failed."
+  else
+    warning "Aborted"
+  fi
+}
 fw_allow_port(){
   read -rp "Port to allow (e.g. 22/tcp or 80): " port
   [ -n "$port" ] && ufw allow "$port" && echo "Allowed $port" || echo "Port empty."
