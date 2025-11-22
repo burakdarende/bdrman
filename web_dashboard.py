@@ -296,6 +296,7 @@ HTML_TEMPLATE = """
         </div>
         <div class="nav-item active" onclick="loadPage('dashboard')"><i class="fas fa-chart-pie"></i> <span>Overview</span></div>
         <div class="nav-item" onclick="loadPage('containers')"><i class="fas fa-box-open"></i> <span>Containers</span></div>
+        <div class="nav-item" onclick="loadPage('services')"><i class="fas fa-server"></i> <span>Services</span></div>
         <div class="nav-item" onclick="loadPage('caprover')"><i class="fas fa-rocket"></i> <span>CapRover</span></div>
         <div class="nav-item" onclick="loadPage('security')"><i class="fas fa-shield-alt"></i> <span>Security</span></div>
         <div class="nav-item" onclick="loadPage('backups')"><i class="fas fa-save"></i> <span>Backups</span></div>
@@ -347,6 +348,19 @@ HTML_TEMPLATE = """
                         <button class="btn btn-danger" onclick="runCmd('web stop')">Stop Web</button>
                     </div>
                     <div class="terminal" id="quick-output" style="height: 150px; margin-top: 15px;">Ready...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SERVICES -->
+        <div id="page-services" class="page" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">System Services</div>
+                    <button class="btn btn-primary" onclick="refreshServices()">Refresh</button>
+                </div>
+                <div class="grid-4" id="services-grid">
+                    <!-- Populated by JS -->
                 </div>
             </div>
         </div>
@@ -443,6 +457,40 @@ HTML_TEMPLATE = """
         function mkChart(id, color) { return new Chart(document.getElementById(id).getContext('2d'), { type: 'line', data: { labels: Array(20).fill(''), datasets: [{ data: Array(20).fill(0), borderColor: color, backgroundColor: color+'20', fill: true }] }, options: chartOpts }); }
         const cpuC = mkChart('cpuChart', '#3b82f6'), memC = mkChart('memChart', '#10b981'), netC = mkChart('netChart', '#f59e0b');
 
+        function refreshServices() {
+            fetch('/api/services').then(r=>r.json()).then(d => {
+                document.getElementById('services-grid').innerHTML = d.services.map(s => `
+                    <div class="card" style="padding:15px; min-height: auto;">
+                        <div style="display:flex; justify-content:space-between; align-items:center">
+                            <strong>${s.name}</strong>
+                            <span class="badge ${s.active ? 'badge-success' : 'badge-danger'}">${s.active ? 'Running' : 'Stopped'}</span>
+                        </div>
+                        <div style="margin-top:10px; display:flex; gap:5px">
+                            <button class="btn btn-sm btn-primary" onclick="serviceAction('${s.name}', 'restart')">Restart</button>
+                            <button class="btn btn-sm ${s.active ? 'btn-danger' : 'btn-success'}" 
+                                onclick="serviceAction('${s.name}', '${s.active ? 'stop' : 'start'}')">
+                                ${s.active ? 'Stop' : 'Start'}
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+            });
+        }
+
+        function serviceAction(n, a) {
+            fetch(`/api/service/${a}/${n}`, {method:'POST'}).then(r=>r.json()).then(d => {
+                if(d.success) { showToast('Success'); refreshServices(); } else showToast('Failed', 'error');
+            });
+        }
+
+        function checkCapRover() {
+            fetch('/api/caprover/status').then(r=>r.json()).then(d => {
+                const b = document.getElementById('caprover-status');
+                b.textContent = d.status.toUpperCase();
+                b.className = 'badge ' + (d.status==='active'?'badge-success':'badge-danger');
+            });
+        }
+
         function loadPage(p) {
             document.querySelectorAll('.page').forEach(e => e.style.display = 'none');
             document.getElementById('page-'+p).style.display = 'block';
@@ -452,6 +500,8 @@ HTML_TEMPLATE = """
             if(p==='backups') refreshBackups();
             if(p==='security') refreshSecurity();
             if(p==='logs') refreshLogs();
+            if(p==='services') refreshServices();
+            if(p==='caprover') checkCapRover();
         }
 
         function updateStats() {
@@ -553,14 +603,35 @@ def stats():
         'net': {'speed': "0 KB/s", 'speed_raw': 0}
     })
 
-@app.route('/api/containers')
+@app.route('/api/services')
 @login_required
-def containers():
+def services():
+    svcs = ['nginx', 'mysql', 'postgresql', 'redis-server', 'ufw', 'ssh', 'cron', 'docker']
+    data = []
+    for s in svcs:
+        active = subprocess.call(f"systemctl is-active --quiet {s}", shell=True) == 0
+        data.append({'name': s, 'active': active})
+    return jsonify({'services': data})
+
+@app.route('/api/service/<action>/<name>', methods=['POST'])
+@login_required
+def service_ctrl(action, name):
+    if action not in ['start', 'stop', 'restart']: return jsonify({'success':False}), 400
     try:
-        out = subprocess.check_output("docker ps -a --format '{{.Names}}|{{.Status}}'", shell=True).decode()
-        data = [{'name': l.split('|')[0], 'status': l.split('|')[1]} for l in out.strip().split('\n') if l]
-        return jsonify({'containers': data})
-    except: return jsonify({'containers': []})
+        subprocess.check_call(f"systemctl {action} {name}", shell=True)
+        return jsonify({'success':True})
+    except: return jsonify({'success':False})
+
+@app.route('/api/caprover/status')
+@login_required
+def caprover_status():
+    try:
+        # Check if container named 'caprover' is running
+        out = subprocess.check_output("docker inspect -f '{{.State.Running}}' caprover 2>/dev/null", shell=True).decode().strip()
+        status = "active" if out == "true" else "inactive"
+    except:
+        status = "inactive"
+    return jsonify({'status': status})
 
 @app.route('/api/security')
 @login_required

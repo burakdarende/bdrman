@@ -4847,6 +4847,106 @@ telegram_bot_status(){
   echo "- Re-run Initial Setup (option 1)"
 }
 
+# ============= SYSTEM STATUS =============
+system_status(){
+  clear_and_banner
+  echo "=== SYSTEM STATUS ==="
+  echo "--------------------------------"
+  echo "Hostname: $(hostname)"
+  echo "OS: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+  echo "Kernel: $(uname -r)"
+  echo "Uptime: $(uptime -p)"
+  echo "--------------------------------"
+  echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
+  echo "Memory Usage: $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+  echo "Disk Usage: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+  echo "--------------------------------"
+  pause
+}
+
+# ============= DOCKER MENU =============
+docker_menu(){
+  while true; do
+    clear_and_banner
+    echo "=== DOCKER MANAGEMENT ==="
+    echo "0) Back"
+    echo "1) List Containers"
+    echo "2) Container Logs"
+    echo "3) Restart Container"
+    echo "4) Stop Container"
+    echo "5) Start Container"
+    echo "6) Prune System (Clean unused)"
+    echo "7) Docker Stats"
+    read -rp "Select (0-7): " c
+    case "$c" in
+      0) break ;;
+      1) docker ps -a; pause ;;
+      2) 
+        read -rp "Container Name: " name
+        docker logs --tail 50 "$name" | less
+        ;;
+      3)
+        read -rp "Container Name: " name
+        docker restart "$name" && success "Restarted $name" || error "Failed"
+        pause
+        ;;
+      4)
+        read -rp "Container Name: " name
+        docker stop "$name" && success "Stopped $name" || error "Failed"
+        pause
+        ;;
+      5)
+        read -rp "Container Name: " name
+        docker start "$name" && success "Started $name" || error "Failed"
+        pause
+        ;;
+      6)
+        echo "⚠️  This will remove all stopped containers, unused networks and images."
+        read -rp "Are you sure? (y/n): " ans
+        if [[ "$ans" =~ ^[Yy]$ ]]; then
+          docker system prune -a -f && success "System pruned"
+        fi
+        pause
+        ;;
+      7) docker stats --no-stream; pause ;;
+      *) echo "Invalid choice."; pause ;;
+    esac
+  done
+}
+
+# ============= SETTINGS MENU =============
+settings_menu(){
+  while true; do
+    clear_and_banner
+    echo "=== SETTINGS ==="
+    echo "0) Back"
+    echo "1) Update BDRman"
+    echo "2) Uninstall BDRman"
+    echo "3) Change Hostname"
+    echo "4) Configure Timezone"
+    read -rp "Select (0-4): " c
+    case "$c" in
+      0) break ;;
+      1) system_update; pause ;; 
+      2) uninstall_bdrman; pause ;;
+      3)
+        read -rp "New Hostname: " h
+        if [ -n "$h" ]; then
+          hostnamectl set-hostname "$h"
+          echo "127.0.0.1 $h" >> /etc/hosts
+          success "Hostname changed to $h"
+        fi
+        pause
+        ;;
+      4)
+        dpkg-reconfigure tzdata
+        pause
+        ;;
+      *) echo "Invalid choice."; pause ;;
+    esac
+  done
+}
+
 main_menu(){
   while true; do
     clear_and_banner
