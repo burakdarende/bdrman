@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bdrman - Server Management Panel (English version)
 # Author: Burak Darende
-# Version: 3.3
+# Version: 4.0
 GITHUB_REPO="https://github.com/burakdarende/bdrman"
 
 # Set locale to UTF-8 to fix character display issues (??)
@@ -87,6 +87,73 @@ load_config(){
 # Call load_config early
 load_config
 
+# ============= COLOR FUNCTIONS (v4.0) =============
+# Terminal color codes
+COLOR_RESET="\033[0m"
+COLOR_RED="\033[0;31m"
+COLOR_GREEN="\033[0;32m"
+COLOR_YELLOW="\033[0;33m"
+COLOR_BLUE="\033[0;34m"
+COLOR_MAGENTA="\033[0;35m"
+COLOR_CYAN="\033[0;36m"
+COLOR_WHITE="\033[0;37m"
+COLOR_BOLD="\033[1m"
+
+# Color output functions
+color_echo(){
+  local color="$1"
+  shift
+  echo -e "${color}$*${COLOR_RESET}"
+}
+
+success(){
+  color_echo "$COLOR_GREEN" "✓ $*"
+}
+
+error(){
+  color_echo "$COLOR_RED" "✗ $*"
+}
+
+warning(){
+  color_echo "$COLOR_YELLOW" "⚠ $*"
+}
+
+info(){
+  color_echo "$COLOR_CYAN" "ℹ $*"
+}
+
+# Progress bar function
+progress_bar(){
+  local current="$1"
+  local total="$2"
+  local width=50
+  local percentage=$((current * 100 / total))
+  local filled=$((width * current / total))
+  local empty=$((width - filled))
+  
+  printf "\r["
+  printf "%${filled}s" | tr ' ' '█'
+  printf "%${empty}s" | tr ' ' '░'
+  printf "] %d%%" "$percentage"
+}
+
+# Table header function
+table_header(){
+  local cols=("$@")
+  printf "${COLOR_BOLD}"
+  printf "%-20s" "${cols[@]}"
+  printf "${COLOR_RESET}\n"
+  printf "%-20s" "${cols[@]}" | tr '[:print:]' '-'
+  printf "\n"
+}
+
+# Table row function
+table_row(){
+  printf "%-20s" "$@"
+  printf "\n"
+}
+
+# Original log functions (keep for compatibility)
 log(){
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOGFILE" >/dev/null
 }
@@ -1104,6 +1171,147 @@ system_uninstall(){
   exit 0
 }
 
+# ============= ADVANCED BACKUP (v4.0) =============
+
+# Incremental backup with manifest
+backup_create_incremental(){
+  info "Creating incremental backup..."
+  
+  MANIFEST_FILE="$BACKUP_DIR/backup_manifest.txt"
+  LAST_BACKUP=$(tail -n1 "$MANIFEST_FILE" 2>/dev/null | awk '{print $1}')
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  
+  if [ -z "$LAST_BACKUP" ]; then
+    info "No previous backup found. Creating full backup..."
+    BACKUP_FILE="$BACKUP_DIR/full_$TIMESTAMP.tar.gz"
+    BACKUP_TYPE="full"
+  else
+    info "Last backup: $LAST_BACKUP"
+    BACKUP_FILE="$BACKUP_DIR/incr_$TIMESTAMP.tar.gz"
+    BACKUP_TYPE="incremental"
+  fi
+  
+  # Build file list
+  BACKUP_LIST=()
+  [ -f "$LOGFILE" ] && BACKUP_LIST+=("$LOGFILE")
+  [ -d "/etc/bdrman" ] && BACKUP_LIST+=("/etc/bdrman")
+  [ -d "/etc/wireguard" ] && BACKUP_LIST+=("/etc/wireguard")
+  [ -d "/etc/nginx" ] && BACKUP_LIST+=("/etc/nginx")
+  
+  if [ "$BACKUP_TYPE" = "incremental" ] && [ -f "$LAST_BACKUP" ]; then
+    tar -czf "$BACKUP_FILE" --newer="$LAST_BACKUP" "${BACKUP_LIST[@]}" 2>/dev/null
+  else
+    tar -czf "$BACKUP_FILE" "${BACKUP_LIST[@]}" 2>/dev/null
+  fi
+  
+  if [ $? -eq 0 ]; then
+    echo "$BACKUP_FILE $BACKUP_TYPE $TIMESTAMP" >> "$MANIFEST_FILE"
+    success "Backup created: $BACKUP_FILE ($BACKUP_TYPE)"
+    log_success "Incremental backup: $BACKUP_FILE"
+  else
+    error "Backup failed"
+    return 1
+  fi
+}
+
+# GPG encryption for backups
+backup_encrypt(){
+  if [ ! -f "$1" ]; then
+    error "Backup file not found: $1"
+    return 1
+  fi
+  
+  info "Encrypting backup with GPG..."
+  
+  if ! command_exists gpg; then
+    warning "GPG not installed. Install: apt install gnupg"
+    return 1
+  fi
+  
+  read -rsp "Enter encryption password: " password
+  echo ""
+  
+  echo "$password" | gpg --batch --yes --passphrase-fd 0 -c "$1"
+  
+  if [ $? -eq 0 ]; then
+    success "Encrypted: $1.gpg"
+    read -rp "Delete unencrypted backup? (yes/no): " del
+    [ "$del" = "yes" ] && rm "$1" && info "Unencrypted backup deleted"
+  else
+    error "Encryption failed"
+    return 1
+  fi
+}
+
+# S3 upload (requires aws-cli)
+backup_upload_s3(){
+  if ! command_exists aws; then
+    warning "AWS CLI not installed. Install: apt install awscli"
+    return 1
+  fi
+  
+  read -rp "S3 Bucket name: " bucket
+  read -rp "Backup file to upload: " file
+  
+  if [ ! -f "$BACKUP_DIR/$file" ]; then
+    error "File not found: $BACKUP_DIR/$file"
+    return 1
+  fi
+  
+  info "Uploading to S3: s3://$bucket/"
+  aws s3 cp "$BACKUP_DIR/$file" "s3://$bucket/bdrman-backups/"
+  
+  if [ $? -eq 0 ]; then
+    success "Uploaded to S3"
+  else
+    error "S3 upload failed"
+  fi
+}
+
+# SFTP upload
+backup_upload_sftp(){
+  read -rp "SFTP Host: " host
+  read -rp "SFTP User: " user
+  read -rp "SFTP Path: " path
+  read -rp "Backup file: " file
+  
+  if [ ! -f "$BACKUP_DIR/$file" ]; then
+    error "File not found: $BACKUP_DIR/$file"
+    return 1
+  fi
+  
+  info "Uploading via SFTP..."
+  sftp "$user@$host" << EOF
+cd $path
+put $BACKUP_DIR/$file
+bye
+EOF
+  
+  if [ $? -eq 0 ]; then
+    success "Uploaded via SFTP"
+  else
+    error "SFTP upload failed"
+  fi
+}
+
+# Backup rotation strategy
+backup_rotate(){
+  info "Applying backup rotation strategy..."
+  
+  # Keep: 7 daily, 4 weekly, 12 monthly
+  DAILY_KEEP=7
+  WEEKLY_KEEP=4
+  MONTHLY_KEEP=12
+  
+  # Daily: Delete backups older than 7 days
+  find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +$DAILY_KEEP -delete
+  
+  # Weekly: Keep first backup of each week
+  # Monthly: Keep first backup of each month
+  # (Simplified - full implementation would track by week/month)
+  
+  success "Backup rotation complete"
+}
 
 backup_list(){
   echo "=== AVAILABLE BACKUPS ==="
@@ -1204,6 +1412,202 @@ backup_remote(){
 }
 
 # ============= SECURITY & HARDENING =============
+# ============= SECURITY FEATURES (v4.0 - PASSIVE MODE) =============
+
+# 2FA Configuration (DISABLED by default)
+2FA_ENABLED=${2FA_ENABLED:-false}
+AUDIT_LOG_ENABLED=${AUDIT_LOG_ENABLED:-false}
+AUDIT_LOG_FILE="/var/log/bdrman_audit.log"
+
+# 2FA Setup (TOTP)
+security_2fa_setup(){
+  if [ "$2FA_ENABLED" != "true" ]; then
+    warning "2FA is currently DISABLED (passive mode)"
+    info "To enable: Set 2FA_ENABLED=true in $CONFIG_FILE"
+    read -rp "Enable 2FA now? (yes/no): " enable
+    if [ "$enable" != "yes" ]; then
+      return
+    fi
+  fi
+  
+  if ! command_exists oathtool; then
+    warning "oathtool not installed. Install: apt install oathtool qrencode"
+    return 1
+  fi
+  
+  info "Setting up 2FA (TOTP)..."
+  
+  # Generate secret
+  SECRET=$(head -c 16 /dev/urandom | base32)
+  
+  # Save to config
+  mkdir -p /etc/bdrman
+  echo "2FA_SECRET=$SECRET" > /etc/bdrman/2fa.conf
+  chmod 600 /etc/bdrman/2fa.conf
+  
+  # Generate QR code
+  ISSUER="BDRman"
+  USER="$(hostname)"
+  OTPAUTH="otpauth://totp/$ISSUER:$USER?secret=$SECRET&issuer=$ISSUER"
+  
+  echo ""
+  info "Scan this QR code with Google Authenticator:"
+  echo ""
+  qrencode -t ANSIUTF8 "$OTPAUTH"
+  echo ""
+  echo "Or enter this secret manually: $SECRET"
+  echo ""
+  
+  success "2FA setup complete"
+  info "Update config: 2FA_ENABLED=true in $CONFIG_FILE"
+}
+
+# Verify 2FA token
+security_2fa_verify(){
+  if [ ! -f /etc/bdrman/2fa.conf ]; then
+    error "2FA not configured"
+    return 1
+  fi
+  
+  source /etc/bdrman/2fa.conf
+  
+  read -rp "Enter 2FA code: " code
+  
+  EXPECTED=$(oathtool --totp -b "$2FA_SECRET")
+  
+  if [ "$code" = "$EXPECTED" ]; then
+    success "2FA verified"
+    return 0
+  else
+    error "Invalid 2FA code"
+    return 1
+  fi
+}
+
+# Audit Log
+audit_log(){
+  if [ "$AUDIT_LOG_ENABLED" != "true" ]; then
+    return
+  fi
+  
+  local action="$1"
+  local user="${SUDO_USER:-$USER}"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  
+  echo "{\"timestamp\":\"$timestamp\",\"user\":\"$user\",\"action\":\"$action\",\"result\":\"success\"}" >> "$AUDIT_LOG_FILE"
+}
+
+# View audit log
+audit_log_view(){
+  if [ ! -f "$AUDIT_LOG_FILE" ]; then
+    warning "No audit log found"
+    info "Enable audit log: AUDIT_LOG_ENABLED=true in $CONFIG_FILE"
+    return
+  fi
+  
+  info "Audit Log (Last 50 entries)"
+  echo ""
+  tail -n 50 "$AUDIT_LOG_FILE" | while read -r line; do
+    echo "$line" | jq -r '. | "\(.timestamp) | \(.user) | \(.action)"' 2>/dev/null || echo "$line"
+  done
+}
+
+# Export audit log
+audit_log_export(){
+  if [ ! -f "$AUDIT_LOG_FILE" ]; then
+    error "No audit log found"
+    return 1
+  fi
+  
+  read -rp "Export format (json/csv): " format
+  EXPORT_FILE="/tmp/audit_export_$(date +%Y%m%d_%H%M%S).$format"
+  
+  if [ "$format" = "csv" ]; then
+    echo "Timestamp,User,Action,Result" > "$EXPORT_FILE"
+    cat "$AUDIT_LOG_FILE" | jq -r '. | [.timestamp, .user, .action, .result] | @csv' >> "$EXPORT_FILE"
+  else
+    cp "$AUDIT_LOG_FILE" "$EXPORT_FILE"
+  fi
+  
+  success "Exported to: $EXPORT_FILE"
+}
+
+# Security Scan
+security_scan(){
+  info "Running security scan..."
+  echo ""
+  
+  SCORE=100
+  ISSUES=()
+  
+  # Port scan
+  info "[1/5] Scanning open ports..."
+  OPEN_PORTS=$(ss -tuln | grep LISTEN | wc -l)
+  echo "   Open ports: $OPEN_PORTS"
+  if [ "$OPEN_PORTS" -gt 10 ]; then
+    ISSUES+=("Too many open ports ($OPEN_PORTS)")
+    SCORE=$((SCORE - 10))
+  fi
+  
+  # SSH config check
+  info "[2/5] Checking SSH configuration..."
+  if grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config 2>/dev/null; then
+    ISSUES+=("Root login enabled in SSH")
+    SCORE=$((SCORE - 15))
+  fi
+  if grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config 2>/dev/null; then
+    ISSUES+=("Password authentication enabled")
+    SCORE=$((SCORE - 10))
+  fi
+  
+  # Firewall check
+  info "[3/5] Checking firewall status..."
+  if ! systemctl is-active ufw >/dev/null 2>&1; then
+    ISSUES+=("Firewall (UFW) not active")
+    SCORE=$((SCORE - 20))
+  fi
+  
+  # Updates check
+  info "[4/5] Checking for updates..."
+  UPDATES=$(apt list --upgradable 2>/dev/null | grep -c upgradable || echo 0)
+  echo "   Available updates: $UPDATES"
+  if [ "$UPDATES" -gt 20 ]; then
+    ISSUES+=("Many pending updates ($UPDATES)")
+    SCORE=$((SCORE - 10))
+  fi
+  
+  # Fail2Ban check
+  info "[5/5] Checking Fail2Ban..."
+  if ! systemctl is-active fail2ban >/dev/null 2>&1; then
+    ISSUES+=("Fail2Ban not active")
+    SCORE=$((SCORE - 15))
+  fi
+  
+  echo ""
+  echo "==========================================="
+  echo "Security Score: $SCORE/100"
+  echo "==========================================="
+  
+  if [ ${#ISSUES[@]} -gt 0 ]; then
+    echo ""
+    warning "Issues found:"
+    for issue in "${ISSUES[@]}"; do
+      echo "  • $issue"
+    done
+  else
+    success "No security issues found!"
+  fi
+  
+  echo ""
+  if [ "$SCORE" -lt 70 ]; then
+    error "Security score is LOW. Immediate action recommended."
+  elif [ "$SCORE" -lt 85 ]; then
+    warning "Security score is MEDIUM. Improvements recommended."
+  else
+    success "Security score is GOOD."
+  fi
+}
+
 security_ssh_harden(){
   echo "=== SSH HARDENING ==="
   SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -1602,15 +2006,194 @@ EOF
   
   # Add to cron
   (crontab -l 2>/dev/null | grep -v "monitor.sh"; echo "*/15 * * * * /etc/bdrman/monitor.sh") | crontab -
-  
   echo "✅ Monitoring alerts configured (checks every 15 minutes)"
   log_success "Alert monitoring configured for $email"
 }
 
+# ============= PERFORMANCE MONITORING (v4.0) =============
+
+METRICS_DB="/var/lib/bdrman/metrics.db"
+
+# Initialize metrics database
+metrics_init_db(){
+  mkdir -p "$(dirname "$METRICS_DB")"
+  
+  if ! command_exists sqlite3; then
+    warning "SQLite3 not installed. Install: apt install sqlite3"
+    return 1
+  fi
+  
+  sqlite3 "$METRICS_DB" << 'EOF'
+CREATE TABLE IF NOT EXISTS metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp INTEGER,
+  metric_type TEXT,
+  value REAL,
+  unit TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp);
+CREATE INDEX IF NOT EXISTS idx_type ON metrics(metric_type);
+EOF
+  
+  success "Metrics database initialized"
+}
+
+# Collect current metrics
+metrics_collect(){
+  if [ ! -f "$METRICS_DB" ]; then
+    metrics_init_db
+  fi
+  
+  TIMESTAMP=$(date +%s)
+  
+  # CPU Load (1 min average)
+  CPU_LOAD=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
+  
+  # Memory usage (percentage)
+  MEM_PERCENT=$(free | awk '/^Mem:/ {printf "%.2f", ($3/$2)*100}')
+  
+  # Disk usage (percentage)
+  DISK_PERCENT=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+  
+  # Network RX/TX (bytes)
+  NET_RX=$(cat /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null || echo 0)
+  NET_TX=$(cat /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null || echo 0)
+  
+  # Insert into database
+  sqlite3 "$METRICS_DB" << EOF
+INSERT INTO metrics (timestamp, metric_type, value, unit) VALUES
+($TIMESTAMP, 'cpu_load', $CPU_LOAD, 'load'),
+($TIMESTAMP, 'memory_percent', $MEM_PERCENT, 'percent'),
+($TIMESTAMP, 'disk_percent', $DISK_PERCENT, 'percent'),
+($TIMESTAMP, 'network_rx', $NET_RX, 'bytes'),
+($TIMESTAMP, 'network_tx', $NET_TX, 'bytes');
+EOF
+}
+
+# Generate report
+metrics_report(){
+  if [ ! -f "$METRICS_DB" ]; then
+    error "No metrics database found. Run metrics collection first."
+    return 1
+  fi
+  
+  read -rp "Report period (1=day, 7=week, 30=month): " days
+  days=${days:-1}
+  
+  SINCE=$(($(date +%s) - (days * 86400)))
+  
+  info "Performance Report (Last $days days)"
+  echo ""
+  
+  # CPU Average
+  CPU_AVG=$(sqlite3 "$METRICS_DB" "SELECT AVG(value) FROM metrics WHERE metric_type='cpu_load' AND timestamp > $SINCE")
+  echo "CPU Load Average: ${CPU_AVG:-N/A}"
+  
+  # Memory Average
+  MEM_AVG=$(sqlite3 "$METRICS_DB" "SELECT AVG(value) FROM metrics WHERE metric_type='memory_percent' AND timestamp > $SINCE")
+  echo "Memory Usage Average: ${MEM_AVG:-N/A}%"
+  
+  # Disk Average
+  DISK_AVG=$(sqlite3 "$METRICS_DB" "SELECT AVG(value) FROM metrics WHERE metric_type='disk_percent' AND timestamp > $SINCE")
+  echo "Disk Usage Average: ${DISK_AVG:-N/A}%"
+  
+  # Peak values
+  echo ""
+  info "Peak Values:"
+  CPU_MAX=$(sqlite3 "$METRICS_DB" "SELECT MAX(value) FROM metrics WHERE metric_type='cpu_load' AND timestamp > $SINCE")
+  MEM_MAX=$(sqlite3 "$METRICS_DB" "SELECT MAX(value) FROM metrics WHERE metric_type='memory_percent' AND timestamp > $SINCE")
+  echo "CPU Load Peak: ${CPU_MAX:-N/A}"
+  echo "Memory Peak: ${MEM_MAX:-N/A}%"
+  
+  success "Report complete"
+}
+
+# Simple ASCII graph
+metrics_graph(){
+  if [ ! -f "$METRICS_DB" ]; then
+    error "No metrics database found."
+    return 1
+  fi
+  
+  read -rp "Metric to graph (cpu_load/memory_percent/disk_percent): " metric
+  read -rp "Hours to show (default 24): " hours
+  hours=${hours:-24}
+  
+  SINCE=$(($(date +%s) - (hours * 3600)))
+  
+  info "$metric - Last $hours hours"
+  echo ""
+  
+  # Get data points
+  DATA=$(sqlite3 "$METRICS_DB" "SELECT value FROM metrics WHERE metric_type='$metric' AND timestamp > $SINCE ORDER BY timestamp")
+  
+  if [ -z "$DATA" ]; then
+    warning "No data available"
+    return
+  fi
+  
+  # Simple bar chart
+  echo "$DATA" | while read -r value; do
+    bars=$(printf "%.0f" "$value")
+    printf "%-5s |" "$value"
+    printf '%*s' "$bars" | tr ' ' '█'
+    echo ""
+  done
+}
+
+# Anomaly detection
+metrics_anomaly_check(){
+  if [ ! -f "$METRICS_DB" ]; then
+    return
+  fi
+  
+  SINCE=$(($(date +%s) - 3600))  # Last hour
+  
+  # Check for sudden spikes
+  CPU_AVG=$(sqlite3 "$METRICS_DB" "SELECT AVG(value) FROM metrics WHERE metric_type='cpu_load' AND timestamp > $SINCE")
+  CPU_CURRENT=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
+  
+  # If current is 2x average, alert
+  if (( $(echo "$CPU_CURRENT > ($CPU_AVG * 2)" | bc -l 2>/dev/null || echo 0) )); then
+    warning "CPU spike detected! Current: $CPU_CURRENT, Average: $CPU_AVG"
+    # Send Telegram alert if configured
+    if [ -f /usr/local/bin/bdrman-telegram ]; then
+      /usr/local/bin/bdrman-telegram "⚠️ CPU Spike: $CPU_CURRENT (avg: $CPU_AVG)"
+    fi
+  fi
+}
+
+# Start metrics collection daemon
+metrics_start_daemon(){
+  info "Starting metrics collection daemon..."
+  
+  cat > /etc/systemd/system/bdrman-metrics.service << 'EOF'
+[Unit]
+Description=BDRman Metrics Collector
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do /usr/local/bin/bdrman metrics collect; sleep 300; done'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  
+  systemctl daemon-reload
+  systemctl enable bdrman-metrics
+  systemctl start bdrman-metrics
+  
+  success "Metrics daemon started (collecting every 5 minutes)"
+}
+
 monitor_uptime(){
   echo "=== UPTIME MONITORING ==="
-  echo "System uptime:"
   uptime
+  echo ""
+  echo "Last reboot:"
+  who -b
   echo ""
   echo "Service status:"
   systemctl is-active docker 2>/dev/null && echo "✅ Docker: Running" || echo "❌ Docker: Not running"
@@ -4031,16 +4614,29 @@ touch "$LOGFILE" 2>/dev/null || true
 
 # ============= CLI ARGUMENT PARSING =============
 
+
 show_help(){
   cat << 'EOF'
-BDRman - Server Management Panel v3.1
+BDRman - Server Management Panel v4.0
 
-Usage: bdrman [OPTIONS]
+Usage: bdrman [COMMAND] [OPTIONS]
+
+COMMANDS:
+  status                  Quick system status
+  backup create           Create backup now
+  backup list             List all backups
+  backup restore          Restore from backup
+  telegram send "msg"     Send Telegram message
+  docker ps               List containers
+  docker logs <name>      Show container logs
+  docker restart <name>   Restart container
+  vpn add <user>          Add VPN user
+  vpn list                List VPN users
+  update                  Update BDRman
 
 OPTIONS:
   --help, -h              Show this help message
   --version, -v           Show version information
-  --auto-backup           Run automatic backup and exit
   --dry-run               Enable dry-run mode (no actual changes)
   --non-interactive       Skip confirmations (use with caution!)
   --check-deps            Check dependencies and exit
@@ -4049,8 +4645,10 @@ OPTIONS:
 
 EXAMPLES:
   bdrman                  # Start interactive menu
-  bdrman --auto-backup    # Create backup and exit
-  bdrman --check-deps     # Verify all required tools are installed
+  bdrman status           # Quick system status
+  bdrman backup create    # Create backup and exit
+  bdrman telegram send "Server is up"
+  bdrman docker ps        # List all containers
   bdrman --debug          # Run with debug logging enabled
 
 CONFIGURATION:
@@ -4062,14 +4660,186 @@ EOF
 }
 
 show_version(){
-  echo "BDRman v3.1"
+  echo "BDRman v4.0"
   echo "Author: Burak Darende"
   echo "License: MIT"
 }
 
 # Parse command line arguments
-while [ $# -gt 0 ]; do
+if [ $# -gt 0 ]; then
   case "$1" in
+    # Quick commands
+    status)
+      info "System Status"
+      echo ""
+      table_header "Metric" "Value"
+      table_row "Hostname" "$(hostname)"
+      table_row "Uptime" "$(uptime -p)"
+      table_row "CPU Load" "$(uptime | awk -F'load average:' '{print $2}')"
+      table_row "Memory" "$(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+      table_row "Disk" "$(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+      echo ""
+      success "Status check complete"
+      exit 0
+      ;;
+    
+    backup)
+      shift
+      case "$1" in
+        create)
+          info "Creating backup..."
+          backup_create
+          exit $?
+          ;;
+        list)
+          backup_list
+          exit 0
+          ;;
+        restore)
+          backup_restore
+          exit $?
+          ;;
+        *)
+          error "Unknown backup command: $1"
+          echo "Usage: bdrman backup {create|list|restore}"
+          exit 1
+          ;;
+      esac
+      ;;
+    
+    telegram)
+      shift
+      case "$1" in
+        send)
+          shift
+          if [ -z "$1" ]; then
+            error "Message required"
+            echo "Usage: bdrman telegram send \"message\""
+            exit 1
+          fi
+          /usr/local/bin/bdrman-telegram "$*"
+          exit $?
+          ;;
+        *)
+          error "Unknown telegram command: $1"
+          echo "Usage: bdrman telegram send \"message\""
+          exit 1
+          ;;
+      esac
+      ;;
+    
+    docker)
+      shift
+      case "$1" in
+        ps)
+          info "Docker Containers"
+          docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          exit 0
+          ;;
+        logs)
+          if [ -z "$2" ]; then
+            error "Container name required"
+            echo "Usage: bdrman docker logs <container>"
+            exit 1
+          fi
+          docker logs --tail 50 "$2"
+          exit $?
+          ;;
+        restart)
+          if [ -z "$2" ]; then
+            error "Container name required"
+            echo "Usage: bdrman docker restart <container>"
+            exit 1
+          fi
+          info "Restarting container: $2"
+          docker restart "$2"
+          success "Container restarted"
+          exit $?
+          ;;
+        *)
+          error "Unknown docker command: $1"
+          echo "Usage: bdrman docker {ps|logs|restart} [container]"
+          exit 1
+          ;;
+      esac
+      ;;
+    
+    vpn)
+      shift
+      case "$1" in
+        add)
+          if [ -z "$2" ]; then
+            error "Username required"
+            echo "Usage: bdrman vpn add <username>"
+            exit 1
+          fi
+          info "Adding VPN user: $2"
+          vpn_add_client
+          exit $?
+          ;;
+        list)
+          info "VPN Users"
+          if [ -d /etc/wireguard ]; then
+            ls -1 /etc/wireguard/*.conf 2>/dev/null | xargs -n1 basename | sed 's/.conf$//'
+          else
+            warning "WireGuard not configured"
+          fi
+          exit 0
+          ;;
+        *)
+          error "Unknown vpn command: $1"
+          echo "Usage: bdrman vpn {add|list}"
+          exit 1
+          ;;
+      esac
+      ;;
+    
+    metrics)
+      shift
+      case "$1" in
+        collect)
+          metrics_collect
+          success "Metrics collected"
+          exit 0
+          ;;
+        report)
+          metrics_report
+          exit 0
+          ;;
+        graph)
+          metrics_graph
+          exit 0
+          ;;
+        daemon)
+          metrics_start_daemon
+          exit 0
+          ;;
+        *)
+          error "Unknown metrics command: $1"
+          echo "Usage: bdrman metrics {collect|report|graph|daemon}"
+          exit 1
+          ;;
+      esac
+      ;;
+    
+    update)
+      info "Checking for updates..."
+      check_updates
+      read -rp "Update now? (yes/no): " confirm
+      if [ "$confirm" = "yes" ]; then
+        info "Downloading latest version..."
+        curl -s -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh" -o /tmp/bdrman_new.sh
+        if [ $? -eq 0 ]; then
+          chmod +x /tmp/bdrman_new.sh
+          mv /tmp/bdrman_new.sh /usr/local/bin/bdrman
+          success "Update complete! Please restart bdrman."
+        else
+          error "Update failed"
+        fi
+      fi
+      exit 0
+      ;;
+    
     --help|-h)
       show_help
       exit 0
@@ -4085,12 +4855,12 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=true
-      echo "🔍 DRY-RUN MODE ENABLED (no changes will be made)"
+      info "DRY-RUN MODE ENABLED (no changes will be made)"
       shift
       ;;
     --non-interactive)
       NON_INTERACTIVE=true
-      echo "⚡ NON-INTERACTIVE MODE ENABLED"
+      info "NON-INTERACTIVE MODE ENABLED"
       shift
       ;;
     --check-deps)
@@ -4099,27 +4869,27 @@ while [ $# -gt 0 ]; do
       ;;
     --debug)
       DEBUG=true
-      echo "🐛 DEBUG MODE ENABLED"
+      info "DEBUG MODE ENABLED"
       shift
       ;;
     --config)
       if [ -n "$2" ] && [ -f "$2" ]; then
         CONFIG_FILE="$2"
         load_config
-        echo "📝 Loaded config from: $CONFIG_FILE"
+        info "Loaded config from: $CONFIG_FILE"
         shift 2
       else
-        echo "❌ Config file not found: $2"
+        error "Config file not found: $2"
         exit 1
       fi
       ;;
     *)
-      echo "❌ Unknown option: $1"
+      error "Unknown command: $1"
       echo "Run 'bdrman --help' for usage information"
       exit 1
       ;;
   esac
-done
+fi
 
 # Check dependencies on startup (unless --help/--version)
 if [ "$DEBUG" = true ]; then

@@ -2,39 +2,57 @@
 
 BDRman, tek bir dosya (`bdrman.sh`) olarak çalışacak şekilde tasarlanmıştır.
 
-## Kurulum
+## 1. Otomatik Kurulum (Önerilen)
 
-**Not:** Repo şu anda private durumda. Public yapmanız önerilir.
-
-### Yöntem 1: Manuel Kurulum (Önerilen)
+Aşağıdaki komutu sunucunuzda çalıştırmanız yeterlidir. Bu komut hem ana scripti hem de web dashboard'u indirir.
 
 ```bash
-# 1. Dosyayı indirin (GitHub'dan raw olarak)
+curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh | bash
+```
+
+**Kurulacak dosyalar:**
+- `/usr/local/bin/bdrman` - Ana script
+- `/opt/bdrman/web_dashboard.py` - Web arayüzü (opsiyonel)
+
+## 2. Manuel Kurulum
+
+Eğer otomatik kurulumu kullanmak istemezseniz:
+
+```bash
+# 1. Ana scripti indirin
 wget https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh
 
 # 2. Çalıştırma izni verin ve sistem yoluna taşıyın
 sudo mv bdrman.sh /usr/local/bin/bdrman
 sudo chmod +x /usr/local/bin/bdrman
 
-# 3. Çalıştırın!
+# 3. (Opsiyonel) Web dashboard'u indirin
+sudo mkdir -p /opt/bdrman
+sudo wget https://raw.githubusercontent.com/burakdarende/bdrman/main/web_dashboard.py -O /opt/bdrman/web_dashboard.py
+sudo chmod +x /opt/bdrman/web_dashboard.py
+
+# 4. Çalıştırın!
 sudo bdrman
 ```
 
-### Yöntem 2: Otomatik Kurulum (Repo Public Olduktan Sonra)
+## 3. Web Dashboard Kullanımı
 
-Repoyu public yaptıktan sonra:
+Web dashboard'u başlatmak için:
 
 ```bash
-curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh | bash
+# Python ve Flask gerekli
+apt install python3 python3-pip
+pip3 install flask
+
+# Dashboard'u başlat
+python3 /opt/bdrman/web_dashboard.py
 ```
 
-Artık terminalde sadece `bdrman` yazarak programa erişebilirsiniz.
+Tarayıcıda: `http://sunucu-ip:8443`
 
-## 2. Opsiyonel Dosyalar
+## 4. Opsiyonel Dosyalar
 
 Klasördeki diğer dosyalar zorunlu değildir ancak faydalıdır:
 
-*   **`logrotate.bdrman`**: Log dosyalarının şişmesini engeller. `/etc/logrotate.d/bdrman` konumuna kopyalayabilirsiniz.
-*   **`config.conf.example`**: Örnek ayar dosyasıdır. İncelemek için tutabilirsiniz.
-
-*Diğer tüm gereksiz dosyalar (lib, deploy.sh, validate.sh) temizlenmiştir.*
+- **`logrotate.bdrman`**: Log dosyalarının şişmesini engeller. `/etc/logrotate.d/bdrman` konumuna kopyalayabilirsiniz.
+- **`config.conf.example`**: Örnek ayar dosyasıdır. İncelemek için tutabilirsiniz.
