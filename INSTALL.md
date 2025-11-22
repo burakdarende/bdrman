@@ -1,58 +1,94 @@
 # BDRman Kurulum Rehberi
 
-BDRman, tek bir dosya (`bdrman.sh`) olarak çalışacak şekilde tasarlanmıştır.
+## 1. Otomatik Kurulum (Önerilen) ⚡
 
-## 1. Otomatik Kurulum (Önerilen)
-
-Aşağıdaki komutu sunucunuzda çalıştırmanız yeterlidir. Bu komut hem ana scripti hem de web dashboard'u indirir.
+**Tek komutla tam kurulum!** Python, bağımlılıklar, web dashboard - her şey otomatik:
 
 ```bash
 curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh | bash
 ```
 
-**Kurulacak dosyalar:**
-- `/usr/local/bin/bdrman` - Ana script
-- `/opt/bdrman/web_dashboard.py` - Web arayüzü (opsiyonel)
+**Kurulacaklar:**
+- ✅ Python3 ve pip
+- ✅ Gerekli bağımlılıklar (curl, wget, tar, rsync)
+- ✅ Opsiyonel paketler (docker, jq, sqlite3)
+- ✅ Ana script (`/usr/local/bin/bdrman`)
+- ✅ Web dashboard (`/opt/bdrman/`)
+- ✅ Flask (Python venv içinde)
+- ✅ Gerekli dizinler ve izinler
+
+**Kurulum sonrası:**
+```bash
+bdrman              # Interactive menu
+bdrman status       # Quick status
+bdrman web start    # Start web dashboard
+```
 
 ## 2. Manuel Kurulum
 
 Eğer otomatik kurulumu kullanmak istemezseniz:
 
 ```bash
-# 1. Ana scripti indirin
-wget https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh
+# 1. Python3 kurulumu
+apt install python3 python3-pip python3-venv
 
-# 2. Çalıştırma izni verin ve sistem yoluna taşıyın
+# 2. Ana scripti indirin
+wget https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh
 sudo mv bdrman.sh /usr/local/bin/bdrman
 sudo chmod +x /usr/local/bin/bdrman
 
-# 3. (Opsiyonel) Web dashboard'u indirin
+# 3. Web dashboard'u indirin
 sudo mkdir -p /opt/bdrman
 sudo wget https://raw.githubusercontent.com/burakdarende/bdrman/main/web_dashboard.py -O /opt/bdrman/web_dashboard.py
 sudo chmod +x /opt/bdrman/web_dashboard.py
 
-# 4. Çalıştırın!
+# 4. Web dashboard'u kurun
+sudo bdrman web setup
+
+# 5. Çalıştırın!
 sudo bdrman
 ```
 
-## 3. Web Dashboard Kullanımı
+## 3. Sistem Gereksinimleri
 
-Web dashboard'u başlatmak için:
+**Minimum:**
+- Ubuntu 18.04+ / Debian 10+ / CentOS 7+
+- 512MB RAM
+- 1GB disk alanı
+
+**Önerilen:**
+- Ubuntu 20.04+ / Debian 11+
+- 1GB+ RAM
+- 5GB+ disk alanı
+- Docker (opsiyonel)
+
+## 4. Kurulum Sonrası
 
 ```bash
-# Python ve Flask gerekli
-apt install python3 python3-pip
-pip3 install flask
+# Web dashboard'u başlat
+bdrman web start
 
-# Dashboard'u başlat
-python3 /opt/bdrman/web_dashboard.py
+# Tarayıcıda aç
+http://sunucu-ip:8443
+
+# Telegram bot kurulumu
+bdrman
+# Menüden: 11) Telegram Bot → 1) Initial Setup
 ```
 
-Tarayıcıda: `http://sunucu-ip:8443`
+## 5. Sorun Giderme
 
-## 4. Opsiyonel Dosyalar
+**Python bulunamadı:**
+```bash
+apt install python3 python3-pip python3-venv
+```
 
-Klasördeki diğer dosyalar zorunlu değildir ancak faydalıdır:
+**Flask kurulum hatası:**
+```bash
+bdrman web setup
+```
 
-- **`logrotate.bdrman`**: Log dosyalarının şişmesini engeller. `/etc/logrotate.d/bdrman` konumuna kopyalayabilirsiniz.
-- **`config.conf.example`**: Örnek ayar dosyasıdır. İncelemek için tutabilirsiniz.
+**İzin hatası:**
+```bash
+sudo bdrman
+```

@@ -1107,12 +1107,25 @@ web_dashboard_setup(){
   info "Creating Python virtual environment..."
   python3 -m venv "$WEB_VENV"
   
+  if [ $? -ne 0 ]; then
+    error "Failed to create virtual environment"
+    return 1
+  fi
+  
   # Install Flask
   info "Installing Flask..."
+  "$WEB_VENV/bin/pip" install --quiet --upgrade pip
   "$WEB_VENV/bin/pip" install --quiet flask
   
   if [ $? -eq 0 ]; then
     success "Web dashboard setup complete"
+    # Verify Flask installation
+    if "$WEB_VENV/bin/python3" -c "import flask" 2>/dev/null; then
+      success "Flask verified successfully"
+    else
+      error "Flask installation verification failed"
+      return 1
+    fi
   else
     error "Flask installation failed"
     return 1
@@ -1578,15 +1591,15 @@ backup_remote(){
 # ============= SECURITY FEATURES (v4.0 - PASSIVE MODE) =============
 
 # 2FA Configuration (DISABLED by default)
-2FA_ENABLED=${2FA_ENABLED:-false}
+TFA_ENABLED=${TFA_ENABLED:-false}
 AUDIT_LOG_ENABLED=${AUDIT_LOG_ENABLED:-false}
 AUDIT_LOG_FILE="/var/log/bdrman_audit.log"
 
 # 2FA Setup (TOTP)
 security_2fa_setup(){
-  if [ "$2FA_ENABLED" != "true" ]; then
+  if [ "$TFA_ENABLED" != "true" ]; then
     warning "2FA is currently DISABLED (passive mode)"
-    info "To enable: Set 2FA_ENABLED=true in $CONFIG_FILE"
+    info "To enable: Set TFA_ENABLED=true in $CONFIG_FILE"
     read -rp "Enable 2FA now? (yes/no): " enable
     if [ "$enable" != "yes" ]; then
       return
