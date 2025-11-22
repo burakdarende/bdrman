@@ -78,22 +78,35 @@ WEB_DEST="/opt/bdrman"
 
 # Download main script
 echo ""
-echo "⬇️  Downloading bdrman.sh..."
-if curl -s -f -L "$REPO_URL/bdrman.sh" -o "$DEST_DIR/bdrman"; then
-  echo "✅ bdrman.sh downloaded"
+if [ -f "bdrman.sh" ]; then
+  echo "📂 Found local bdrman.sh, using it..."
+  cp "bdrman.sh" "$DEST_DIR/bdrman"
+  echo "✅ bdrman.sh installed from local source"
 else
-  echo "❌ Download failed. Check your internet connection."
-  exit 1
+  echo "⬇️  Downloading bdrman.sh..."
+  if curl -s -f -L "$REPO_URL/bdrman.sh" -o "$DEST_DIR/bdrman"; then
+    echo "✅ bdrman.sh downloaded"
+  else
+    echo "❌ Download failed. Check your internet connection."
+    exit 1
+  fi
 fi
 
 # Download web dashboard
-echo "⬇️  Downloading web_dashboard.py..."
+echo "⬇️  Installing web_dashboard.py..."
 mkdir -p "$WEB_DEST"
-# Always overwrite web_dashboard.py to get the latest version
-if curl -s -f -L "$REPO_URL/web_dashboard.py" -o "$WEB_DEST/web_dashboard.py"; then
-  echo "✅ web_dashboard.py updated"
+
+if [ -f "web_dashboard.py" ]; then
+  echo "📂 Found local web_dashboard.py, using it..."
+  cp "web_dashboard.py" "$WEB_DEST/web_dashboard.py"
+  echo "✅ web_dashboard.py installed from local source"
 else
-  echo "⚠️  Web dashboard download failed (optional)"
+  # Always overwrite web_dashboard.py to get the latest version
+  if curl -s -f -L "$REPO_URL/web_dashboard.py" -o "$WEB_DEST/web_dashboard.py"; then
+    echo "✅ web_dashboard.py updated"
+  else
+    echo "⚠️  Web dashboard download failed (optional)"
+  fi
 fi
 
 # Set permissions
