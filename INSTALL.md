@@ -2,20 +2,14 @@
 
 BDRman, tek bir dosya (`bdrman.sh`) olarak çalışacak şekilde tasarlanmıştır.
 
-## 1. Otomatik Kurulum (Önerilen)
+## Kurulum
 
-Aşağıdaki komutu sunucunuzda çalıştırmanız yeterlidir. Bu komut dosyayı indirir, izinleri ayarlar ve kurulumu tamamlar.
+**Not:** Repo şu anda private durumda. Public yapmanız önerilir.
 
-```bash
-curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh | bash
-```
-
-## 2. Manuel Kurulum
-
-Eğer otomatik kurulumu kullanmak istemezseniz:
+### Yöntem 1: Manuel Kurulum (Önerilen)
 
 ```bash
-# 1. Dosyayı indirin
+# 1. Dosyayı indirin (GitHub'dan raw olarak)
 wget https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh
 
 # 2. Çalıştırma izni verin ve sistem yoluna taşıyın
@@ -24,6 +18,14 @@ sudo chmod +x /usr/local/bin/bdrman
 
 # 3. Çalıştırın!
 sudo bdrman
+```
+
+### Yöntem 2: Otomatik Kurulum (Repo Public Olduktan Sonra)
+
+Repoyu public yaptıktan sonra:
+
+```bash
+curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh | bash
 ```
 
 Artık terminalde sadece `bdrman` yazarak programa erişebilirsiniz.

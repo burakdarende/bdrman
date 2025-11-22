@@ -1012,6 +1012,98 @@ system_fix_permissions(){
   log_success "System permissions fixed"
 }
 
+system_uninstall(){
+  echo "=== ⚠️  UNINSTALL BDRMAN ==="
+  echo ""
+  echo "This will completely remove BDRman from your system, including:"
+  echo "  • Main executable (/usr/local/bin/bdrman)"
+  echo "  • Configuration files (/etc/bdrman/)"
+  echo "  • Telegram bot service"
+  echo "  • Security monitoring service"
+  echo "  • Log files"
+  echo "  • Cron jobs"
+  echo ""
+  echo "⚠️  WARNING: Backups in /var/backups/bdrman will be PRESERVED"
+  echo ""
+  
+  read -rp "Are you SURE you want to uninstall? (yes/no): " confirm1
+  if [ "$confirm1" != "yes" ]; then
+    echo "Uninstall cancelled."
+    return
+  fi
+  
+  echo ""
+  echo "⚠️  FINAL WARNING: This action cannot be undone!"
+  read -rp "Type 'DELETE' to confirm: " confirm2
+  if [ "$confirm2" != "DELETE" ]; then
+    echo "Uninstall cancelled."
+    return
+  fi
+  
+  echo ""
+  echo "🗑️  Starting uninstall process..."
+  echo ""
+  
+  # Stop and disable services
+  echo -n "[1/8] Stopping Telegram bot service... "
+  systemctl stop bdrman-telegram 2>/dev/null || true
+  systemctl disable bdrman-telegram 2>/dev/null || true
+  rm -f /etc/systemd/system/bdrman-telegram.service
+  echo "✅"
+  
+  echo -n "[2/8] Stopping security monitoring service... "
+  systemctl stop bdrman-security-monitor 2>/dev/null || true
+  systemctl disable bdrman-security-monitor 2>/dev/null || true
+  rm -f /etc/systemd/system/bdrman-security-monitor.service
+  echo "✅"
+  
+  systemctl daemon-reload 2>/dev/null || true
+  
+  # Remove cron jobs
+  echo -n "[3/8] Removing cron jobs... "
+  crontab -l 2>/dev/null | grep -v "bdrman\|telegram_weekly_report\|telegram_daily_report" | crontab - 2>/dev/null || true
+  echo "✅"
+  
+  # Remove configuration directory
+  echo -n "[4/8] Removing configuration files... "
+  rm -rf /etc/bdrman
+  echo "✅"
+  
+  # Remove executable
+  echo -n "[5/8] Removing main executable... "
+  rm -f /usr/local/bin/bdrman
+  rm -f /usr/local/bin/bdrman-telegram
+  rm -f /usr/local/bin/bdrman-validate
+  echo "✅"
+  
+  # Remove log files
+  echo -n "[6/8] Removing log files... "
+  rm -f "$LOGFILE"
+  echo "✅"
+  
+  # Remove lock file
+  echo -n "[7/8] Removing lock file... "
+  rm -f "$LOCK_FILE"
+  echo "✅"
+  
+  # Remove logrotate config
+  echo -n "[8/8] Removing logrotate config... "
+  rm -f /etc/logrotate.d/bdrman
+  echo "✅"
+  
+  echo ""
+  echo "✅ BDRman has been completely uninstalled."
+  echo ""
+  echo "📦 Backups are preserved at: /var/backups/bdrman"
+  echo "   (Remove manually if needed: rm -rf /var/backups/bdrman)"
+  echo ""
+  echo "Thank you for using BDRman! 👋"
+  echo ""
+  
+  # Exit the script
+  exit 0
+}
+
 
 backup_list(){
   echo "=== AVAILABLE BACKUPS ==="
@@ -3613,7 +3705,8 @@ advanced_menu(){
     echo "5) Configuration as Code"
     echo "6) Advanced Firewall"
     echo "7) 🔧 Fix Permissions (Self-Repair)"
-    read -rp "Select (0-7): " c
+    echo "8) 🗑️  Uninstall BDRman"
+    read -rp "Select (0-8): " c
     case "$c" in
       0) break ;;
       1) nginx_manage; pause ;;
@@ -3623,6 +3716,7 @@ advanced_menu(){
       5) config_menu; pause ;;
       6) firewall_advanced; pause ;;
       7) system_fix_permissions; pause ;;
+      8) system_uninstall ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
