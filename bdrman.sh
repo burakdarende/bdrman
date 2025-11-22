@@ -4847,6 +4847,65 @@ telegram_bot_status(){
   echo "- Re-run Initial Setup (option 1)"
 }
 
+# ============= UPDATE & UNINSTALL =============
+system_update(){
+  echo "=== SYSTEM UPDATE ==="
+  echo "This will update BDRman and the Web Dashboard to the latest version."
+  echo "Web Dashboard will be restarted automatically."
+  read -rp "Continue? (y/n): " ans
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then return; fi
+
+  echo "⬇️  Downloading latest installer..."
+  if curl -s -f -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh" -o "/tmp/bdrman_install.sh"; then
+    bash "/tmp/bdrman_install.sh"
+    
+    if [ $? -eq 0 ]; then
+      echo "🔄 Restarting Web Dashboard..."
+      web_dashboard_stop
+      web_dashboard_start
+      success "Update complete! Please restart bdrman to see changes."
+      exit 0
+    else
+      error "Update failed during installation."
+    fi
+  else
+    error "Failed to download update script."
+  fi
+  pause
+}
+
+uninstall_bdrman(){
+  echo "=== UNINSTALL BDRMAN ==="
+  echo "⚠️  DANGER: This will REMOVE BDRman, Web Dashboard, Configs, and Logs."
+  echo "    Backups in $BACKUP_DIR will be PRESERVED unless you choose to delete them."
+  read -rp "Are you SURE you want to uninstall? (type 'uninstall' to confirm): " ans
+  if [ "$ans" != "uninstall" ]; then echo "Cancelled."; pause; return; fi
+
+  echo "🛑 Stopping services..."
+  web_dashboard_stop
+  systemctl stop bdrman-telegram 2>/dev/null
+  systemctl disable bdrman-telegram 2>/dev/null
+  rm -f /etc/systemd/system/bdrman-telegram.service
+  
+  echo "🗑️  Removing files..."
+  rm -f /usr/local/bin/bdrman
+  rm -rf /opt/bdrman
+  rm -rf /etc/bdrman
+  rm -f /var/log/bdrman.log
+  
+  read -rp "❓ Do you want to delete all backups in $BACKUP_DIR? (y/n): " del_backups
+  if [[ "$del_backups" =~ ^[Yy]$ ]]; then
+    rm -rf "$BACKUP_DIR"
+    echo "🗑️  Backups deleted."
+  else
+    echo "✅ Backups preserved at $BACKUP_DIR"
+  fi
+  
+  systemctl daemon-reload
+  echo "✅ BDRman has been uninstalled. Goodbye!"
+  exit 0
+}
+
 # ============= SYSTEM STATUS =============
 system_status(){
   clear_and_banner
