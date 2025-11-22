@@ -4850,8 +4850,36 @@ telegram_bot_status(){
 main_menu(){
   while true; do
     clear_and_banner
+    echo "=== MAIN MENU ==="
     echo "1) System Status"
     echo "2) VPN Settings"
+    echo "3) CapRover Management"
+    echo "4) Firewall Settings"
+    echo "5) Logs & Monitoring"
+    echo "6) Backup & Restore"
+    echo "7) Security & Hardening"
+    echo "8) Docker Management"
+    echo "9) Web Dashboard"
+    echo "10) Settings"
+    echo "11) About"
+    echo "12) Quick Commands"
+    echo "13) Exit"
+    read -rp "Select (1-13): " s
+    case "$s" in
+      1) system_status; pause ;;
+      2) vpn_menu ;;
+      3) caprover_menu ;;
+      4) firewall_menu ;;
+      5) logs_menu ;;
+      6) backup_menu ;;
+      7) security_menu ;;
+      8) docker_menu ;;
+      9) web_dashboard_menu ;;
+      10) settings_menu ;;
+      11) show_version; pause ;;
+      12)
+        echo "=== QUICK COMMANDS ==="
+        echo "1) List Docker Containers"
         echo "2) System Update"
         echo "3) Restart All Services"
         read -rp "Choice (Enter = Back): " k
@@ -4861,14 +4889,14 @@ main_menu(){
           3)
             systemctl restart docker
             systemctl restart nginx
-            systemctl restart wg-quick@wg0
+            [ -f /etc/wireguard/wg0.conf ] && systemctl restart wg-quick@wg0
             echo "✅ Services restarted"
             pause
             ;;
-          *) echo "Returning..."; pause ;;
+          *) ;;
         esac
         ;;
-      13) echo "Exiting..."; log "bdrman exited."; break ;;
+      13) echo "Exiting..."; exit 0 ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
