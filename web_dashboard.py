@@ -52,12 +52,13 @@ HTML_TEMPLATE = """
             color: var(--text-primary);
             min-height: 100vh;
             display: flex;
+            overflow-x: hidden; /* Prevent horizontal scroll */
         }
 
         /* Sidebar */
         .sidebar {
             width: 260px;
-            background: rgba(15, 23, 42, 0.8);
+            background: rgba(15, 23, 42, 0.95); /* Less transparent for better contrast */
             backdrop-filter: blur(10px);
             border-right: var(--glass-border);
             padding: 20px;
@@ -66,6 +67,7 @@ HTML_TEMPLATE = """
             position: fixed;
             height: 100vh;
             z-index: 100;
+            overflow-y: auto;
         }
 
         .logo {
@@ -106,6 +108,8 @@ HTML_TEMPLATE = """
             margin-left: 260px;
             padding: 30px;
             max-width: 1600px;
+            overflow-y: auto; /* Allow scrolling in main content */
+            height: 100vh;
         }
 
         .header {
@@ -141,6 +145,12 @@ HTML_TEMPLATE = """
             border-radius: 16px;
             padding: 20px;
             transition: transform 0.2s;
+            display: flex;
+            flex-direction: column;
+            /* IMPORTANT: Prevent card from growing infinitely */
+            min-height: 200px; 
+            max-height: 500px;
+            overflow: hidden;
         }
 
         .card:hover { transform: translateY(-2px); }
@@ -155,12 +165,24 @@ HTML_TEMPLATE = """
         .card-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
         
         .stat-value { font-size: 32px; font-weight: 700; margin-bottom: 5px; }
-        .stat-sub { font-size: 13px; color: var(--text-secondary); }
+        .stat-sub { font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; }
+
+        /* Chart Container - CRITICAL FIX */
+        .chart-wrapper {
+            position: relative;
+            height: 100px; /* Fixed height for charts */
+            width: 100%;
+            margin-top: auto; /* Push to bottom */
+        }
 
         /* Tables */
-        .table-container { overflow-x: auto; }
+        .table-container { 
+            overflow-x: auto; 
+            flex: 1; /* Take remaining space */
+            overflow-y: auto; /* Allow vertical scroll inside card */
+        }
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 15px; color: var(--text-secondary); font-weight: 500; border-bottom: var(--glass-border); }
+        th { text-align: left; padding: 15px; color: var(--text-secondary); font-weight: 500; border-bottom: var(--glass-border); position: sticky; top: 0; background: rgba(30, 41, 59, 0.9); z-index: 10; }
         td { padding: 15px; border-bottom: var(--glass-border); }
         tr:last-child td { border-bottom: none; }
 
@@ -196,7 +218,8 @@ HTML_TEMPLATE = """
             font-family: 'Fira Code', monospace;
             font-size: 13px;
             color: #0f0;
-            height: 400px;
+            height: 100%;
+            min-height: 300px;
             overflow-y: auto;
             border: var(--glass-border);
         }
@@ -278,19 +301,23 @@ HTML_TEMPLATE = """
                     <div class="card-title">CPU Usage</div>
                     <div class="stat-value" id="cpu-val">0%</div>
                     <div class="stat-sub" id="cpu-temp">Temp: --°C</div>
-                    <canvas id="cpuChart" height="60"></canvas>
+                    <div class="chart-wrapper">
+                        <canvas id="cpuChart"></canvas>
+                    </div>
                 </div>
                 <div class="card">
                     <div class="card-title">Memory</div>
                     <div class="stat-value" id="mem-val">0%</div>
                     <div class="stat-sub" id="mem-detail">0/0 GB</div>
-                    <canvas id="memChart" height="60"></canvas>
+                    <div class="chart-wrapper">
+                        <canvas id="memChart"></canvas>
+                    </div>
                 </div>
                 <div class="card">
                     <div class="card-title">Disk Space</div>
                     <div class="stat-value" id="disk-val">0%</div>
                     <div class="stat-sub" id="disk-detail">0/0 GB Free</div>
-                    <div style="height: 4px; background: rgba(255,255,255,0.1); margin-top: 10px; border-radius: 2px;">
+                    <div style="height: 4px; background: rgba(255,255,255,0.1); margin-top: auto; border-radius: 2px;">
                         <div id="disk-bar" style="width: 0%; height: 100%; background: var(--accent); border-radius: 2px;"></div>
                     </div>
                 </div>
@@ -298,7 +325,9 @@ HTML_TEMPLATE = """
                     <div class="card-title">Network (I/O)</div>
                     <div class="stat-value" id="net-val">0 KB/s</div>
                     <div class="stat-sub">Total: <span id="net-total">0 GB</span></div>
-                    <canvas id="netChart" height="60"></canvas>
+                    <div class="chart-wrapper">
+                        <canvas id="netChart"></canvas>
+                    </div>
                 </div>
             </div>
 
@@ -324,14 +353,14 @@ HTML_TEMPLATE = """
                         <button class="btn btn-warning" onclick="runCmd('metrics report')"><i class="fas fa-file-alt"></i> Metrics Report</button>
                         <button class="btn btn-danger" onclick="runCmd('web stop')"><i class="fas fa-power-off"></i> Stop Dashboard</button>
                     </div>
-                    <div class="terminal" id="quick-output" style="height: 200px; margin-top: 15px;">Ready...</div>
+                    <div class="terminal" id="quick-output" style="height: 150px; margin-top: 15px;">Ready...</div>
                 </div>
             </div>
         </div>
 
         <!-- CONTAINERS -->
         <div id="page-containers" class="page" style="display: none;">
-            <div class="card">
+            <div class="card" style="height: calc(100vh - 100px);">
                 <div class="card-header">
                     <div class="card-title">Docker Containers</div>
                     <button class="btn btn-primary" onclick="refreshContainers()"><i class="fas fa-sync"></i> Refresh</button>
@@ -369,7 +398,7 @@ HTML_TEMPLATE = """
         <!-- SECURITY -->
         <div id="page-security" class="page" style="display: none;">
             <div class="grid-2">
-                <div class="card">
+                <div class="card" style="max-height: 600px;">
                     <div class="card-header">
                         <div class="card-title">Firewall (UFW)</div>
                         <div class="badge badge-success" id="ufw-status">Active</div>
@@ -381,7 +410,7 @@ HTML_TEMPLATE = """
                         </table>
                     </div>
                 </div>
-                <div class="card">
+                <div class="card" style="max-height: 600px;">
                     <div class="card-header">
                         <div class="card-title">Fail2Ban Jails</div>
                     </div>
@@ -413,7 +442,7 @@ HTML_TEMPLATE = """
 
         <!-- LOGS -->
         <div id="page-logs" class="page" style="display: none;">
-            <div class="card">
+            <div class="card" style="height: calc(100vh - 100px);">
                 <div class="card-header">
                     <div class="card-title">System Logs</div>
                     <button class="btn btn-primary" onclick="refreshLogs()"><i class="fas fa-sync"></i> Refresh</button>
@@ -434,10 +463,17 @@ HTML_TEMPLATE = """
         // --- CHARTS ---
         const chartOptions = {
             responsive: true,
-            maintainAspectRatio: false,
+            maintainAspectRatio: false, // Critical for fitting in container
             plugins: { legend: { display: false } },
-            scales: { x: { display: false }, y: { display: false, min: 0 } },
-            elements: { point: { radius: 0 }, line: { tension: 0.4, borderWidth: 2 } }
+            scales: { 
+                x: { display: false }, 
+                y: { display: false, min: 0 } 
+            },
+            elements: { 
+                point: { radius: 0 }, 
+                line: { tension: 0.4, borderWidth: 2 } 
+            },
+            animation: { duration: 0 } // Disable animation for performance
         };
 
         function createChart(id, color) {
