@@ -1079,12 +1079,167 @@ system_fix_permissions(){
   log_success "System permissions fixed"
 }
 
+# ============= WEB DASHBOARD MANAGEMENT (v4.0) =============
+
+WEB_DIR="/opt/bdrman"
+WEB_VENV="$WEB_DIR/venv"
+WEB_SCRIPT="$WEB_DIR/web_dashboard.py"
+WEB_PORT=8443
+
+# Setup web dashboard
+web_dashboard_setup(){
+  info "Setting up web dashboard..."
+  
+  # Check if Python3 is installed
+  if ! command_exists python3; then
+    error "Python3 not found. Install: apt install python3 python3-pip python3-venv"
+    return 1
+  fi
+  
+  # Check if web_dashboard.py exists
+  if [ ! -f "$WEB_SCRIPT" ]; then
+    error "Web dashboard not found at $WEB_SCRIPT"
+    info "Run installation script to download it"
+    return 1
+  fi
+  
+  # Create virtual environment
+  info "Creating Python virtual environment..."
+  python3 -m venv "$WEB_VENV"
+  
+  # Install Flask
+  info "Installing Flask..."
+  "$WEB_VENV/bin/pip" install --quiet flask
+  
+  if [ $? -eq 0 ]; then
+    success "Web dashboard setup complete"
+  else
+    error "Flask installation failed"
+    return 1
+  fi
+}
+
+# Start web dashboard
+web_dashboard_start(){
+  # Check if already running
+  if systemctl is-active bdrman-web >/dev/null 2>&1; then
+    warning "Web dashboard is already running"
+    web_dashboard_status
+    return 0
+  fi
+  
+  # Check if venv exists
+  if [ ! -d "$WEB_VENV" ]; then
+    info "Virtual environment not found. Setting up..."
+    web_dashboard_setup || return 1
+  fi
+  
+  # Create systemd service
+  info "Creating systemd service..."
+  cat > /etc/systemd/system/bdrman-web.service << EOF
+[Unit]
+Description=BDRman Web Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$WEB_DIR
+ExecStart=$WEB_VENV/bin/python3 $WEB_SCRIPT
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  
+  systemctl daemon-reload
+  systemctl enable bdrman-web
+  systemctl start bdrman-web
+  
+  sleep 2
+  
+  if systemctl is-active bdrman-web >/dev/null 2>&1; then
+    success "Web dashboard started"
+    web_dashboard_status
+  else
+    error "Failed to start web dashboard"
+    journalctl -u bdrman-web -n 20 --no-pager
+    return 1
+  fi
+}
+
+# Stop web dashboard
+web_dashboard_stop(){
+  if systemctl is-active bdrman-web >/dev/null 2>&1; then
+    info "Stopping web dashboard..."
+    systemctl stop bdrman-web
+    systemctl disable bdrman-web
+    success "Web dashboard stopped"
+  else
+    warning "Web dashboard is not running"
+  fi
+}
+
+# Web dashboard status
+web_dashboard_status(){
+  echo ""
+  info "Web Dashboard Status"
+  echo ""
+  
+  if systemctl is-active bdrman-web >/dev/null 2>&1; then
+    success "Status: RUNNING"
+    
+    # Get server IP
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    
+    echo ""
+    echo "Access URLs:"
+    echo "  • Local:    http://localhost:$WEB_PORT"
+    echo "  • Network:  http://$SERVER_IP:$WEB_PORT"
+    echo ""
+    echo "Commands:"
+    echo "  • Stop:     bdrman web stop"
+    echo "  • Restart:  systemctl restart bdrman-web"
+    echo "  • Logs:     journalctl -u bdrman-web -f"
+  else
+    error "Status: STOPPED"
+    echo ""
+    echo "Start with: bdrman web start"
+  fi
+  echo ""
+}
+
+# Web dashboard menu
+web_dashboard_menu(){
+  if [ ! -f "$WEB_SCRIPT" ]; then
+    error "Web dashboard not installed"
+    info "Run: curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh | bash"
+    return 1
+  fi
+  
+  echo "1) Start Dashboard"
+  echo "2) Stop Dashboard"
+  echo "3) Status"
+  echo "4) Setup/Reinstall"
+  read -rp "Choice: " choice
+  
+  case "$choice" in
+    1) web_dashboard_start ;;
+    2) web_dashboard_stop ;;
+    3) web_dashboard_status ;;
+    4) web_dashboard_setup ;;
+    *) error "Invalid choice" ;;
+  esac
+}
+
 system_uninstall(){
   echo "=== ⚠️  UNINSTALL BDRMAN ==="
   echo ""
   echo "This will completely remove BDRman from your system, including:"
   echo "  • Main executable (/usr/local/bin/bdrman)"
   echo "  • Configuration files (/etc/bdrman/)"
+  echo "  • Web dashboard (/opt/bdrman/)"
   echo "  • Telegram bot service"
   echo "  • Security monitoring service"
   echo "  • Log files"
@@ -1112,13 +1267,19 @@ system_uninstall(){
   echo ""
   
   # Stop and disable services
-  echo -n "[1/8] Stopping Telegram bot service... "
+  echo -n "[1/9] Stopping web dashboard... "
+  systemctl stop bdrman-web 2>/dev/null || true
+  systemctl disable bdrman-web 2>/dev/null || true
+  rm -f /etc/systemd/system/bdrman-web.service
+  echo "✅"
+  
+  echo -n "[2/9] Stopping Telegram bot service... "
   systemctl stop bdrman-telegram 2>/dev/null || true
   systemctl disable bdrman-telegram 2>/dev/null || true
   rm -f /etc/systemd/system/bdrman-telegram.service
   echo "✅"
   
-  echo -n "[2/8] Stopping security monitoring service... "
+  echo -n "[3/9] Stopping security monitoring service... "
   systemctl stop bdrman-security-monitor 2>/dev/null || true
   systemctl disable bdrman-security-monitor 2>/dev/null || true
   rm -f /etc/systemd/system/bdrman-security-monitor.service
@@ -1127,34 +1288,36 @@ system_uninstall(){
   systemctl daemon-reload 2>/dev/null || true
   
   # Remove cron jobs
-  echo -n "[3/8] Removing cron jobs... "
+  echo -n "[4/9] Removing cron jobs... "
   crontab -l 2>/dev/null | grep -v "bdrman\|telegram_weekly_report\|telegram_daily_report" | crontab - 2>/dev/null || true
   echo "✅"
   
+  # Remove web dashboard
+  echo -n "[5/9] Removing web dashboard... "
+  rm -rf /opt/bdrman
+  echo "✅"
+  
   # Remove configuration directory
-  echo -n "[4/8] Removing configuration files... "
+  echo -n "[6/9] Removing configuration files... "
   rm -rf /etc/bdrman
   echo "✅"
   
   # Remove executable
-  echo -n "[5/8] Removing main executable... "
+  echo -n "[7/9] Removing main executable... "
   rm -f /usr/local/bin/bdrman
   rm -f /usr/local/bin/bdrman-telegram
   rm -f /usr/local/bin/bdrman-validate
   echo "✅"
   
   # Remove log files
-  echo -n "[6/8] Removing log files... "
+  echo -n "[8/9] Removing log files... "
   rm -f "$LOGFILE"
+  rm -f /var/log/bdrman_audit.log
   echo "✅"
   
-  # Remove lock file
-  echo -n "[7/8] Removing lock file... "
+  # Remove lock file and logrotate
+  echo -n "[9/9] Removing lock file and logrotate... "
   rm -f "$LOCK_FILE"
-  echo "✅"
-  
-  # Remove logrotate config
-  echo -n "[8/8] Removing logrotate config... "
   rm -f /etc/logrotate.d/bdrman
   echo "✅"
   
@@ -4632,6 +4795,12 @@ COMMANDS:
   docker restart <name>   Restart container
   vpn add <user>          Add VPN user
   vpn list                List VPN users
+  metrics collect         Collect metrics
+  metrics report          Generate report
+  metrics graph           Show graph
+  web start               Start web dashboard
+  web stop                Stop web dashboard
+  web status              Web dashboard status
   update                  Update BDRman
 
 OPTIONS:
@@ -4649,6 +4818,7 @@ EXAMPLES:
   bdrman backup create    # Create backup and exit
   bdrman telegram send "Server is up"
   bdrman docker ps        # List all containers
+  bdrman web start        # Start web dashboard
   bdrman --debug          # Run with debug logging enabled
 
 CONFIGURATION:
@@ -4699,9 +4869,26 @@ if [ $# -gt 0 ]; then
           backup_restore
           exit $?
           ;;
+        --help|-h)
+          cat << 'EOF'
+Usage: bdrman backup <command>
+
+Commands:
+  create              Create a new backup
+  list                List all available backups
+  restore             Restore from a backup
+
+Examples:
+  bdrman backup create
+  bdrman backup list
+  bdrman backup restore
+EOF
+          exit 0
+          ;;
         *)
           error "Unknown backup command: $1"
           echo "Usage: bdrman backup {create|list|restore}"
+          echo "Run 'bdrman backup --help' for more information"
           exit 1
           ;;
       esac
@@ -4720,9 +4907,25 @@ if [ $# -gt 0 ]; then
           /usr/local/bin/bdrman-telegram "$*"
           exit $?
           ;;
+        --help|-h)
+          cat << 'EOF'
+Usage: bdrman telegram <command>
+
+Commands:
+  send "message"      Send a message via Telegram bot
+
+Examples:
+  bdrman telegram send "Server is up"
+  bdrman telegram send "Backup completed successfully"
+
+Note: Telegram bot must be configured first.
+EOF
+          exit 0
+          ;;
         *)
           error "Unknown telegram command: $1"
           echo "Usage: bdrman telegram send \"message\""
+          echo "Run 'bdrman telegram --help' for more information"
           exit 1
           ;;
       esac
@@ -4756,9 +4959,26 @@ if [ $# -gt 0 ]; then
           success "Container restarted"
           exit $?
           ;;
+        --help|-h)
+          cat << 'EOF'
+Usage: bdrman docker <command> [options]
+
+Commands:
+  ps                  List all Docker containers
+  logs <container>    Show logs for a container (last 50 lines)
+  restart <container> Restart a container
+
+Examples:
+  bdrman docker ps
+  bdrman docker logs nginx-proxy
+  bdrman docker restart captain-captain
+EOF
+          exit 0
+          ;;
         *)
           error "Unknown docker command: $1"
           echo "Usage: bdrman docker {ps|logs|restart} [container]"
+          echo "Run 'bdrman docker --help' for more information"
           exit 1
           ;;
       esac
@@ -4786,9 +5006,26 @@ if [ $# -gt 0 ]; then
           fi
           exit 0
           ;;
+        --help|-h)
+          cat << 'EOF'
+Usage: bdrman vpn <command> [options]
+
+Commands:
+  add <username>      Add a new VPN user
+  list                List all VPN users
+
+Examples:
+  bdrman vpn add john
+  bdrman vpn list
+
+Note: WireGuard must be installed first.
+EOF
+          exit 0
+          ;;
         *)
           error "Unknown vpn command: $1"
           echo "Usage: bdrman vpn {add|list}"
+          echo "Run 'bdrman vpn --help' for more information"
           exit 1
           ;;
       esac
@@ -4814,9 +5051,83 @@ if [ $# -gt 0 ]; then
           metrics_start_daemon
           exit 0
           ;;
+        --help|-h)
+          cat << 'EOF'
+Usage: bdrman metrics <command>
+
+Commands:
+  collect             Collect current system metrics
+  report              Generate performance report
+  graph               Show ASCII graph of metrics
+  daemon              Start metrics collection daemon
+
+Examples:
+  bdrman metrics collect
+  bdrman metrics report
+  bdrman metrics graph
+  bdrman metrics daemon
+
+Note: Requires sqlite3 for metric storage.
+EOF
+          exit 0
+          ;;
         *)
           error "Unknown metrics command: $1"
           echo "Usage: bdrman metrics {collect|report|graph|daemon}"
+          echo "Run 'bdrman metrics --help' for more information"
+          exit 1
+          ;;
+      esac
+      ;;
+    
+    web)
+      shift
+      case "$1" in
+        start)
+          web_dashboard_start
+          exit $?
+          ;;
+        stop)
+          web_dashboard_stop
+          exit 0
+          ;;
+        status)
+          web_dashboard_status
+          exit 0
+          ;;
+        setup)
+          web_dashboard_setup
+          exit $?
+          ;;
+        --help|-h)
+          cat << 'EOF'
+Usage: bdrman web <command>
+
+Commands:
+  start               Start web dashboard
+  stop                Stop web dashboard
+  status              Show dashboard status and access URLs
+  setup               Setup/reinstall Python virtual environment
+
+Examples:
+  bdrman web start
+  bdrman web status
+  bdrman web stop
+
+Access: http://server-ip:8443
+Note: Requires Python3 and Flask (auto-installed in venv).
+EOF
+          exit 0
+          ;;
+        *)
+          if [ -z "$1" ]; then
+            # No argument, show status
+            web_dashboard_status
+          else
+            error "Unknown web command: $1"
+            echo "Usage: bdrman web {start|stop|status|setup}"
+            echo "Run 'bdrman web --help' for more information"
+          fi
           exit 1
           ;;
       esac
