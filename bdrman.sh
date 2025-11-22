@@ -1113,10 +1113,12 @@ web_dashboard_setup(){
     return 1
   fi
   
-  # Check if web_dashboard.py exists
-  if [ ! -f "$WEB_SCRIPT" ]; then
-    error "Web dashboard not found at $WEB_SCRIPT"
-    info "Run installation script to download it"
+  # Force download latest web_dashboard.py
+  info "Downloading latest web dashboard..."
+  if curl -s -f -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/web_dashboard.py" -o "$WEB_SCRIPT"; then
+    success "Dashboard script updated"
+  else
+    error "Failed to download dashboard script"
     return 1
   fi
   
@@ -1129,22 +1131,22 @@ web_dashboard_setup(){
     return 1
   fi
   
-  # Install Flask
-  info "Installing Flask..."
+  # Install dependencies (Flask + psutil)
+  info "Installing dependencies (Flask, psutil)..."
   "$WEB_VENV/bin/pip" install --quiet --upgrade pip
-  "$WEB_VENV/bin/pip" install --quiet flask
+  "$WEB_VENV/bin/pip" install --quiet flask psutil
   
   if [ $? -eq 0 ]; then
     success "Web dashboard setup complete"
     # Verify Flask installation
-    if "$WEB_VENV/bin/python3" -c "import flask" 2>/dev/null; then
-      success "Flask verified successfully"
+    if "$WEB_VENV/bin/python3" -c "import flask; import psutil" 2>/dev/null; then
+      success "Dependencies verified successfully"
     else
-      error "Flask installation verification failed"
+      error "Dependency verification failed"
       return 1
     fi
   else
-    error "Flask installation failed"
+    error "Dependency installation failed"
     return 1
   fi
 }

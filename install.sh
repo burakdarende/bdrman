@@ -89,8 +89,9 @@ fi
 # Download web dashboard
 echo "⬇️  Downloading web_dashboard.py..."
 mkdir -p "$WEB_DEST"
+# Always overwrite web_dashboard.py to get the latest version
 if curl -s -f -L "$REPO_URL/web_dashboard.py" -o "$WEB_DEST/web_dashboard.py"; then
-  echo "✅ web_dashboard.py downloaded"
+  echo "✅ web_dashboard.py updated"
 else
   echo "⚠️  Web dashboard download failed (optional)"
 fi
