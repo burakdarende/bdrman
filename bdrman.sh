@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bdrman - Server Management Panel (English version)
 # Author: Burak Darende
-# Version: 3.1
+# Version: 3.2
+GITHUB_REPO="https://github.com/burakdarende/bdrman"
 
 # Root check
 if [ "$EUID" -ne 0 ]; then
@@ -13,6 +14,27 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
   fi
 fi
+
+# ============= UPDATE CHECKER =============
+check_updates(){
+  if [ "$CHECK_UPDATES" = false ]; then
+    return
+  fi
+  
+  # Get latest version from GitHub (tags)
+  # Timeout set to 3 seconds to avoid hanging
+  LATEST_VERSION=$(curl -s --max-time 3 "https://api.github.com/repos/burakdarende/bdrman/tags" | grep '"name":' | head -n 1 | cut -d '"' -f 4 | sed 's/v//')
+  
+  if [ -n "$LATEST_VERSION" ] && [ "$VERSION" != "$LATEST_VERSION" ]; then
+    echo ""
+    echo "🚨 NEW VERSION AVAILABLE: v$LATEST_VERSION"
+    echo "   Current version: v$VERSION"
+    echo "   Update command: bdrman --update"
+    echo ""
+    sleep 2
+  fi
+}
+
 
 # Default configuration (can be overridden by config file)
 LOGFILE="/var/log/bdrman.log"
@@ -1787,84 +1809,7 @@ security_monitoring_status(){
 }
 
 # ============= DATABASE MANAGEMENT =============
-db_menu_main(){
-  echo "=== DATABASE MANAGEMENT ==="
-  echo "1) PostgreSQL"
-  echo "2) MySQL/MariaDB"
-  read -rp "Choice: " choice
-  
-  case "$choice" in
-    1) db_postgresql ;;
-    2) db_mysql ;;
-  esac
-}
 
-db_postgresql(){
-  echo "=== PostgreSQL Management ==="
-  
-  if ! command_exists psql; then
-    echo "PostgreSQL not installed."
-    return
-  fi
-  
-  echo "1) List databases"
-  echo "2) Create database"
-  echo "3) Create user"
-  echo "4) Backup database"
-  echo "5) Restore database"
-  read -rp "Choice: " choice
-  
-  case "$choice" in
-    1) sudo -u postgres psql -c '\l' ;;
-    2)
-      read -rp "Database name: " dbname
-      sudo -u postgres createdb "$dbname" && echo "✅ Database created"
-      ;;
-    3)
-      read -rp "Username: " username
-      read -rsp "Password: " password
-      echo ""
-      sudo -u postgres psql -c "CREATE USER $username WITH PASSWORD '$password';"
-      ;;
-    4)
-      read -rp "Database name: " dbname
-      sudo -u postgres pg_dump "$dbname" > "$BACKUP_DIR/${dbname}_$(date +%Y%m%d).sql"
-      echo "✅ Backup saved to $BACKUP_DIR"
-      ;;
-    5)
-      read -rp "Database name: " dbname
-      read -rp "SQL file path: " sqlfile
-      sudo -u postgres psql "$dbname" < "$sqlfile"
-      ;;
-  esac
-}
-
-db_mysql(){
-  echo "=== MySQL/MariaDB Management ==="
-  
-  if ! command_exists mysql; then
-    echo "MySQL not installed."
-    return
-  fi
-  
-  echo "1) List databases"
-  echo "2) Create database"
-  echo "3) Backup database"
-  read -rp "Choice: " choice
-  
-  case "$choice" in
-    1) mysql -e "SHOW DATABASES;" ;;
-    2)
-      read -rp "Database name: " dbname
-      mysql -e "CREATE DATABASE $dbname;"
-      ;;
-    3)
-      read -rp "Database name: " dbname
-      mysqldump "$dbname" > "$BACKUP_DIR/${dbname}_$(date +%Y%m%d).sql"
-      echo "✅ Backup saved"
-      ;;
-  esac
-}
 
 # ============= NGINX MANAGEMENT =============
 nginx_manage(){
@@ -1894,53 +1839,7 @@ nginx_manage(){
 }
 
 # ============= USER MANAGEMENT =============
-user_manage(){
-  echo "=== USER MANAGEMENT ==="
-  echo "1) List users"
-  echo "2) Add user"
-  echo "3) Delete user"
-  echo "4) Add user to sudo"
-  echo "5) List SSH keys"
-  echo "6) Add SSH key"
-  read -rp "Choice: " choice
-  
-  case "$choice" in
-    1) cat /etc/passwd | grep -E "/bin/bash|/bin/sh" | cut -d: -f1 ;;
-    2)
-      read -rp "Username: " username
-      adduser "$username" && echo "✅ User created"
-      log "User created: $username"
-      ;;
-    3)
-      read -rp "Username to delete: " username
-      read -rp "⚠️  Delete home dir too? (y/n): " delhome
-      if [[ "$delhome" =~ [Yy] ]]; then
-        deluser --remove-home "$username"
-      else
-        deluser "$username"
-      fi
-      echo "✅ User deleted"
-      ;;
-    4)
-      read -rp "Username: " username
-      usermod -aG sudo "$username" && echo "✅ Added to sudo group"
-      ;;
-    5)
-      read -rp "Username: " username
-      [ -f "/home/$username/.ssh/authorized_keys" ] && cat "/home/$username/.ssh/authorized_keys" || echo "No keys found"
-      ;;
-    6)
-      read -rp "Username: " username
-      read -rp "Paste SSH public key: " sshkey
-      mkdir -p "/home/$username/.ssh"
-      echo "$sshkey" >> "/home/$username/.ssh/authorized_keys"
-      chown -R "$username:$username" "/home/$username/.ssh"
-      chmod 700 "/home/$username/.ssh"
-      chmod 600 "/home/$username/.ssh/authorized_keys"
-      echo "✅ SSH key added"
-      ;;
-  esac
-}
+
 
 # ============= NETWORK DIAGNOSTICS =============
 network_diag(){
@@ -3037,8 +2936,9 @@ telegram_bot_webhook(){
 import os
 import subprocess
 import shlex
+import socket
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 # Load config
 config = {}
@@ -3050,10 +2950,20 @@ with open('/etc/bdrman/telegram.conf', 'r') as f:
 
 BOT_TOKEN = config.get('BOT_TOKEN')
 ALLOWED_CHAT_ID = config.get('CHAT_ID')
+PIN_CODE = config.get('PIN_CODE', '1234') # Default PIN if not set
+SERVER_NAME = config.get('SERVER_NAME', socket.gethostname())
 
-def run_command(cmd):
+# States for ConversationHandler
+PIN_CHECK = 1
+
+def run_command(cmd_list):
+    """Run command securely using list format (shell=False)"""
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        # If cmd_list is string, split it safely, but prefer list input
+        if isinstance(cmd_list, str):
+            cmd_list = shlex.split(cmd_list)
+            
+        result = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30)
         return result.stdout if result.stdout else result.stderr
     except Exception as e:
         return f"Error: {str(e)}"
@@ -3068,7 +2978,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     await update.message.reply_text(
-        "🤖 *BDRman Bot Active*\n\n"
+        f"🤖 *BDRman Bot Active*\n"
+        f"🖥️ *Server:* `{SERVER_NAME}`\n\n"
         "Use /help to see available commands",
         parse_mode='Markdown'
     )
@@ -3076,274 +2987,81 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
-    help_text = """
+    help_text = f"""
 🤖 *BDRman Bot - Command List*
+🖥️ *Server:* `{SERVER_NAME}`
 
 📊 *MONITORING:*
 /status - Detailed system status report
 /health - System health check
 /docker - Docker containers status
-/containers - Detailed container list
 /services - All system services
 /logs - Recent system errors
 /disk - Disk usage details
 /memory - Memory usage
 /uptime - System uptime
-/network - Network information
-/top - Top resource-consuming processes
 
 🔧 *MANAGEMENT:*
 /restart [service] - Restart service
 /vpn <username> - Create VPN user
 /backup - Create system backup
-/snapshot - Create full system snapshot
+/snapshot - Create full system snapshot (PIN Required)
 /update - System update (apt)
 
-🚢 *CAPROVER:*
-/capbackup - Create CapRover backup
-/caplist - List backup history
-/capclean - Clean old backups
-
-🛡️ *SECURITY & DDOS:*
+🛡️ *SECURITY:*
 /ddos_enable - Enable DDoS protection
 /ddos_disable - Disable DDoS protection
-/ddos_status - Check protection status
-/caprover_protect - ⚡ Quick CapRover protection
 /firewall - Firewall status
 /block <ip> - Block IP address
 /ssl <domain> - Get SSL certificate
 
 🚨 *EMERGENCY:*
-/emergency_exit - Exit emergency mode & restore services
-
-🎉 *FUN & USEFUL:*
-/joke - Random server joke
-/fortune - Server fortune cookie
-/cowsay [text] - Cow says...
-/funstats - Fun server statistics
-/ascii - ASCII art
-/tip - Random server tip
+/emergency_exit - Exit emergency mode (PIN Required)
 
 ℹ️ *INFO:*
 /help - This help message
 /about - About this bot
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔒 *Security Notice:*
-Real-time security monitoring active!
-You'll receive alerts for threats automatically.
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
-
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    about_text = """
-🤖 *BDRman Telegram Bot*
-
-Version: 2.1 (Security Enhanced)
-Author: Burak Darende
-
-A complete server management system 
-accessible via Telegram.
-
-Features:
-✅ Real-time monitoring
-✅ Service management
-✅ Automated alerts
-✅ Backup & snapshots
-✅ DDoS Protection (NEW)
-✅ Security tools
-✅ VPN management
-
-Security:
-🔒 Dangerous commands removed
-🛡️ DDoS protection built-in
-🔐 Chat ID authentication
-
-GitHub: burakdarende/bdrman
-    """
-    await update.message.reply_text(about_text, parse_mode='Markdown')
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     
-    await update.message.reply_text("📊 Collecting detailed system status...")
+    await update.message.reply_text(f"📊 Collecting status for *{SERVER_NAME}*...", parse_mode='Markdown')
     
-    # Basic system info
-    hostname = run_command("hostname").strip()
-    uptime = run_command("uptime -p").strip()
-    uptime_since = run_command("uptime -s").strip()
-    kernel = run_command("uname -r").strip()
+    # Safe commands without shell=True
+    uptime = run_command(["uptime", "-p"]).strip()
+    kernel = run_command(["uname", "-r"]).strip()
     
-    # Disk info (detailed)
-    disk_usage = run_command("df -h / | tail -1 | awk '{print $5}'").strip()
-    disk_used = run_command("df -h / | tail -1 | awk '{print $3}'").strip()
-    disk_free = run_command("df -h / | tail -1 | awk '{print $4}'").strip()
-    disk_total = run_command("df -h / | tail -1 | awk '{print $2}'").strip()
+    # For complex pipes, we still need shell=True or python logic. 
+    # For safety, we'll use python logic where possible or fixed commands.
     
-    # Memory info (detailed)
-    mem_total = run_command("free -h | grep Mem | awk '{print $2}'").strip()
-    mem_used = run_command("free -h | grep Mem | awk '{print $3}'").strip()
-    mem_free = run_command("free -h | grep Mem | awk '{print $4}'").strip()
-    mem_percent = run_command("free | grep Mem | awk '{printf(\"%.0f\", $3/$2 * 100.0)}'").strip()
+    # Disk
+    disk_res = run_command("df -h /")
+    disk_lines = disk_res.splitlines()
+    disk_info = disk_lines[1].split() if len(disk_lines) > 1 else ["?"]*6
+    disk_usage = disk_info[4]
     
-    # CPU info
-    cpu_count = run_command("nproc").strip()
-    cpu_usage = run_command("top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1").strip()
-    load = run_command("uptime | awk -F'load average:' '{print $2}'").strip()
-    
-    # Network info
-    ip_addr = run_command("hostname -I | awk '{print $1}'").strip()
-    connections = run_command("ss -tunap 2>/dev/null | grep ESTAB | wc -l").strip()
-    
-    # Docker info (detailed)
-    docker_running = run_command("docker ps --format '{{.Names}}' 2>/dev/null | wc -l").strip()
-    docker_stopped = run_command("docker ps -a --filter 'status=exited' --format '{{.Names}}' 2>/dev/null | wc -l").strip()
-    docker_total = run_command("docker ps -a --format '{{.Names}}' 2>/dev/null | wc -l").strip()
-    
-    # CapRover specific
-    caprover_status = run_command("docker ps --filter 'name=captain' --format '{{.Names}}' 2>/dev/null").strip()
-    if caprover_status:
-        caprover_running = "✅ Running"
-        caprover_containers = run_command("docker ps --filter 'name=captain' --format '{{.Names}}' 2>/dev/null | wc -l").strip()
-    else:
-        caprover_running = "⚠️ Not detected"
-        caprover_containers = "0"
-    
-    # Check services
-    services_status = ""
-    for svc in ['docker', 'nginx', 'wg-quick@wg0', 'ufw', 'ssh']:
-        status_cmd = f"systemctl is-active {svc} 2>/dev/null || systemctl is-active sshd 2>/dev/null"
-        if run_command(status_cmd).strip() == 'active':
-            services_status += f"✅ {svc}\n"
-        else:
-            services_status += f"⚠️ {svc}\n"
-    
-    # Security info
-    ufw_status = run_command("ufw status | head -1").strip()
-    failed_logins = run_command("grep 'Failed password' /var/log/auth.log 2>/dev/null | tail -5 | wc -l").strip()
-    
-    # Disk usage icon
-    disk_num = disk_usage.replace('%', '')
-    if disk_num.isdigit():
-        disk_num = int(disk_num)
-        if disk_num >= 90:
-            disk_icon = "🔴"
-        elif disk_num >= 80:
-            disk_icon = "🟡"
-        else:
-            disk_icon = "�"
-    else:
-        disk_icon = "ℹ️"
-    
-    # Memory icon
-    if mem_percent.isdigit():
-        mem_num = int(mem_percent)
-        if mem_num >= 90:
-            mem_icon = "🔴"
-        elif mem_num >= 80:
-            mem_icon = "🟡"
-        else:
-            mem_icon = "🟢"
-    else:
-        mem_icon = "ℹ️"
+    # Memory
+    mem_res = run_command("free -h")
     
     report = f"""
-�📊 *DETAILED SYSTEM STATUS*
+📊 *SYSTEM STATUS - {SERVER_NAME}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🖥️ *Server Information*
-• Hostname: `{hostname}`
+🖥️ *System*
 • Kernel: `{kernel}`
 • Uptime: {uptime}
-• Started: {uptime_since}
 
-💻 *System Resources*
-{disk_icon} *Disk:* {disk_usage} ({disk_used} used / {disk_free} free)
-   Total: {disk_total}
+💾 *Disk (/)*
+• Usage: {disk_usage}
+• Free: {disk_info[3]}
 
-{mem_icon} *Memory:* {mem_percent}% ({mem_used} / {mem_total})
-   Free: {mem_free}
-
-⚡ *CPU:* {cpu_usage}% usage
-   Cores: {cpu_count}
-   Load Average: {load}
-
-🐳 *Docker Containers*
-• Running: {docker_running}
-• Stopped: {docker_stopped}
-• Total: {docker_total}
-
-🚢 *CapRover Status*
-• Status: {caprover_running}
-• Apps: {caprover_containers}
-
-🌐 *Network*
-• IP Address: `{ip_addr}`
-• Active Connections: {connections}
-
-⚙️ *Services*
-{services_status}
-
-🔒 *Security*
-• Firewall: {ufw_status}
-• Recent Failed Logins: {failed_logins}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 Generated: {run_command("date '+%Y-%m-%d %H:%M:%S'").strip()}
+🧠 *Memory*
+```
+{mem_res}
+```
     """
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
-
-async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🏥 Running health check...")
-    
-    issues = 0
-    report = "🏥 *HEALTH CHECK REPORT*\n\n"
-    
-    # Check SSH
-    ssh_status = run_command("systemctl is-active sshd || systemctl is-active ssh").strip()
-    if ssh_status == 'active':
-        report += "✅ SSH is running\n"
-    else:
-        report += "❌ SSH is DOWN!\n"
-        issues += 1
-    
-    # Check disk
-    disk_usage = run_command("df / | tail -1 | awk '{print $5}' | sed 's/%//'").strip()
-    if disk_usage and int(disk_usage) < 90:
-        report += f"✅ Disk usage: {disk_usage}%\n"
-    else:
-        report += f"⚠️ Disk usage critical: {disk_usage}%\n"
-        issues += 1
-    
-    # Check memory
-    mem_usage = run_command("free | grep Mem | awk '{printf(\"%.0f\", $3/$2 * 100.0)}'").strip()
-    if mem_usage and int(mem_usage) < 90:
-        report += f"✅ Memory usage: {mem_usage}%\n"
-    else:
-        report += f"⚠️ High memory usage: {mem_usage}%\n"
-    
-    # Check failed services
-    failed = run_command("systemctl --failed --no-pager --no-legend | wc -l").strip()
-    if failed == '0':
-        report += "✅ No failed services\n"
-    else:
-        report += f"❌ Failed services: {failed}\n"
-        issues += 1
-    
-    report += f"\n*Summary:* "
-    if issues == 0:
-        report += "🟢 All systems healthy"
-    else:
-        report += f"🔴 {issues} critical issue(s) found"
-    
     await update.message.reply_text(report, parse_mode='Markdown')
 
 async def vpn_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3351,803 +3069,160 @@ async def vpn_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if len(context.args) == 0:
-        await update.message.reply_text("Usage: /vpn <username>\nExample: /vpn john")
+        await update.message.reply_text("Usage: /vpn <username>")
         return
     
     username = context.args[0]
+    # Sanitize username (alphanumeric only)
+    if not username.isalnum():
+        await update.message.reply_text("❌ Invalid username. Alphanumeric only.")
+        return
+
     await update.message.reply_text(f"🔐 Creating VPN user: {username}...")
     
-    # Check if wireguard-install.sh exists
     if os.path.exists("/usr/local/bin/wireguard-install.sh"):
-        result = run_command(f"echo '{username}' | /usr/local/bin/wireguard-install.sh")
-        await update.message.reply_text(f"✅ VPN user '{username}' created!\n\nCheck your server for the config file in /root/")
+        # Secure execution
+        p = subprocess.Popen(["/usr/local/bin/wireguard-install.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = p.communicate(input=f"{username}\n")
+        
+        if p.returncode == 0:
+            await update.message.reply_text(f"✅ VPN user '{username}' created!\nCheck /root/ for config.")
+        else:
+            await update.message.reply_text(f"❌ Error:\n{stderr}")
     else:
-        await update.message.reply_text("❌ WireGuard installation script not found at /usr/local/bin/wireguard-install.sh")
-
-async def restart_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    if len(context.args) == 0:
-        await update.message.reply_text("Usage: /restart <service>\n\nOptions: docker, nginx, wireguard, all\n\nExample: /restart docker")
-        return
-    
-    service = context.args[0].lower()
-    
-    await update.message.reply_text(f"🔄 Restarting {service}...")
-    
-    if service == "docker":
-        run_command("systemctl restart docker")
-    elif service == "nginx":
-        run_command("systemctl restart nginx")
-    elif service == "wireguard":
-        run_command("systemctl restart wg-quick@wg0")
-    elif service == "all":
-        run_command("systemctl restart docker nginx wg-quick@wg0 2>/dev/null")
-    else:
-        await update.message.reply_text("❌ Invalid service. Use: docker, nginx, wireguard, or all")
-        return
-    
-    await update.message.reply_text(f"✅ {service} restarted!")
-
-async def docker_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    containers = run_command("docker ps --format '{{.Names}} - {{.Status}}'")
-    
-    if containers:
-        await update.message.reply_text(f"🐳 *Docker Containers:*\n\n```\n{containers}\n```", parse_mode='Markdown')
-    else:
-        await update.message.reply_text("No containers running")
-
-async def containers_detailed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    containers = run_command("docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'")
-    
-    if len(containers) > 4000:
-        containers = containers[:4000] + "\n... (truncated)"
-    
-    await update.message.reply_text(f"🐳 *All Containers:*\n\n```\n{containers}\n```", parse_mode='Markdown')
-
-async def create_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("💾 Creating backup...")
-    
-    timestamp = subprocess.run("date +%Y%m%d_%H%M%S", shell=True, capture_output=True, text=True).stdout.strip()
-    backup_file = f"/var/backups/bdrman/backup_{timestamp}.tar.gz"
-    
-    run_command(f"mkdir -p /var/backups/bdrman && tar -czf {backup_file} /etc/wireguard /etc/ufw /etc/nginx /var/log/bdrman.log 2>/dev/null")
-    
-    size = run_command(f"du -h {backup_file} | cut -f1").strip()
-    
-    await update.message.reply_text(f"✅ Backup created!\n\n📦 File: `{backup_file}`\n💾 Size: {size}", parse_mode='Markdown')
-
-async def create_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("📸 Creating system snapshot...\n⏳ This may take several minutes.")
-    
-    timestamp = subprocess.run("date +%Y%m%d_%H%M%S", shell=True, capture_output=True, text=True).stdout.strip()
-    snapshot_name = f"snapshot_{timestamp}"
-    
-    # Run snapshot creation in background
-    cmd = f"mkdir -p /var/snapshots && rsync -aAX --delete --exclude=/dev --exclude=/proc --exclude=/sys --exclude=/tmp --exclude=/run --exclude=/mnt --exclude=/media --exclude=/lost+found --exclude=/var/snapshots / /var/snapshots/{snapshot_name}/ 2>&1"
-    
-    result = run_command(cmd)
-    
-    if "error" in result.lower():
-        await update.message.reply_text(f"❌ Snapshot creation failed!\n\n```\n{result[:500]}\n```", parse_mode='Markdown')
-    else:
-        await update.message.reply_text(f"✅ System snapshot created!\n\n📸 Name: `{snapshot_name}`\n📁 Path: `/var/snapshots/{snapshot_name}/`", parse_mode='Markdown')
-
-async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    logs = run_command("journalctl -p err -n 20 --no-pager")
-    
-    if len(logs) > 4000:
-        logs = logs[:4000] + "\n... (truncated)"
-    
-    if logs.strip():
-        await update.message.reply_text(f"📋 *Recent Errors:*\n\n```\n{logs}\n```", parse_mode='Markdown')
-    else:
-        await update.message.reply_text("✅ No recent errors found!")
-
-async def firewall_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    status = run_command("ufw status numbered")
-    
-    if len(status) > 4000:
-        status = status[:4000] + "\n... (truncated)"
-    
-    await update.message.reply_text(f"🔥 *Firewall Status:*\n\n```\n{status}\n```", parse_mode='Markdown')
-
-async def block_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    if len(context.args) == 0:
-        await update.message.reply_text("Usage: /block <ip>\nExample: /block 192.168.1.100")
-        return
-    
-    ip = context.args[0]
-    
-    # Basic IP validation
-    parts = ip.split('.')
-    if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-        await update.message.reply_text("❌ Invalid IP address")
-        return
-    
-    await update.message.reply_text(f"🔒 Blocking IP: {ip}...")
-    
-    run_command(f"ufw deny from {ip}")
-    
-    await update.message.reply_text(f"✅ IP {ip} has been blocked!")
+        await update.message.reply_text("❌ WireGuard script not found.")
 
 async def get_ssl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     
     if len(context.args) == 0:
-        await update.message.reply_text("Usage: /ssl <domain>\nExample: /ssl example.com")
+        await update.message.reply_text("Usage: /ssl <domain>")
         return
     
     domain = context.args[0]
-    
-    if not run_command("command -v certbot").strip():
-        await update.message.reply_text("❌ Certbot not installed. Install it first via the main menu.")
+    # Basic domain validation
+    if not all(c.isalnum() or c in '.-' for c in domain):
+        await update.message.reply_text("❌ Invalid domain format.")
         return
+        
+    await update.message.reply_text(f"🔐 Requesting SSL for: {domain}...")
     
-    await update.message.reply_text(f"🔐 Obtaining SSL certificate for: {domain}\n⏳ This may take a minute...")
-    
-    result = run_command(f"certbot certonly --nginx -d {domain} --non-interactive --agree-tos --email admin@{domain}")
+    cmd = ["certbot", "certonly", "--nginx", "-d", domain, "--non-interactive", "--agree-tos", "--email", f"admin@{domain}"]
+    result = run_command(cmd)
     
     if "Successfully received certificate" in result:
-        await update.message.reply_text(f"✅ SSL certificate obtained for {domain}!")
+        await update.message.reply_text(f"✅ SSL obtained for {domain}!")
     else:
-        await update.message.reply_text(f"❌ SSL certificate request failed!\n\n```\n{result[:500]}\n```", parse_mode='Markdown')
+        await update.message.reply_text(f"❌ Failed:\n{result[:200]}")
 
-async def disk_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    disk = run_command("df -h | grep -vE '^Filesystem|tmpfs|cdrom'")
-    await update.message.reply_text(f"💾 *Disk Usage:*\n\n```\n{disk}\n```", parse_mode='Markdown')
-
-async def memory_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    mem = run_command("free -h")
-    await update.message.reply_text(f"🧠 *Memory Usage:*\n\n```\n{mem}\n```", parse_mode='Markdown')
-
-async def uptime_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    uptime = run_command("uptime -p").strip()
-    since = run_command("uptime -s").strip()
-    
-    await update.message.reply_text(f"⏱️ *System Uptime*\n\n🕐 {uptime}\n📅 Since: {since}")
-
-async def network_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    interfaces = run_command("ip -br addr show")
-    
-    await update.message.reply_text(f"🌐 *Network Interfaces:*\n\n```\n{interfaces}\n```", parse_mode='Markdown')
-
-async def top_processes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    processes = run_command("ps aux --sort=-%mem | head -n 11")
-    
-    await update.message.reply_text(f"📊 *Top Processes (by memory):*\n\n```\n{processes}\n```", parse_mode='Markdown')
-
-async def services_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    services = run_command("systemctl list-units --type=service --state=running --no-pager | head -n 20")
-    
-    if len(services) > 4000:
-        services = services[:4000] + "\n... (truncated)"
-    
-    await update.message.reply_text(f"⚙️ *Running Services:*\n\n```\n{services}\n```", parse_mode='Markdown')
-
-async def system_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🔄 Starting system update...\n⏳ This may take several minutes.")
-    
-    result = run_command("apt update && apt upgrade -y 2>&1 | tail -n 20")
-    
-    await update.message.reply_text(f"✅ System update completed!\n\n```\n{result}\n```", parse_mode='Markdown')
-
-# ============= DDOS PROTECTION FOR CAPROVER =============
-
-async def ddos_protection_enable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("�️ *Enabling DDoS Protection*\n\nApplying iptables rules...")
-    
-    commands = [
-        # SYN flood protection
-        "iptables -A INPUT -p tcp --syn -m limit --limit 1/s --limit-burst 3 -j ACCEPT",
-        "iptables -A INPUT -p tcp --syn -j DROP",
-        
-        # Ping flood protection
-        "iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 1/s -j ACCEPT",
-        "iptables -A INPUT -p icmp --icmp-type echo-request -j DROP",
-        
-        # Port scanning protection
-        "iptables -N port-scanning 2>/dev/null || true",
-        "iptables -A port-scanning -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s --limit-burst 2 -j RETURN",
-        "iptables -A port-scanning -j DROP",
-        
-        # Connection limit per IP
-        "iptables -A INPUT -p tcp --dport 80 -m connlimit --connlimit-above 20 -j REJECT",
-        "iptables -A INPUT -p tcp --dport 443 -m connlimit --connlimit-above 20 -j REJECT",
-        
-        # Rate limit for HTTP/HTTPS
-        "iptables -A INPUT -p tcp --dport 80 -m state --state NEW -m recent --set",
-        "iptables -A INPUT -p tcp --dport 80 -m state --state NEW -m recent --update --seconds 1 --hitcount 10 -j DROP",
-        "iptables -A INPUT -p tcp --dport 443 -m state --state NEW -m recent --set",
-        "iptables -A INPUT -p tcp --dport 443 -m state --state NEW -m recent --update --seconds 1 --hitcount 10 -j DROP",
-    ]
-    
-    for cmd in commands:
-        run_command(cmd)
-    
-    # Save iptables rules
-    run_command("iptables-save > /etc/iptables/rules.v4 2>/dev/null || true")
-    
-    report = """
-✅ *DDoS Protection Enabled!*
-
-Applied protections:
-• SYN flood protection (1 req/sec)
-• ICMP flood protection (1 ping/sec)
-• Port scanning protection
-• Connection limit (20 per IP for HTTP/HTTPS)
-• Rate limiting (10 req/sec per IP)
-
-*CapRover Apps Protected:*
-• Port 80 (HTTP)
-• Port 443 (HTTPS)
-
-⚠️ *Note:* Rules are active but not persistent.
-To make permanent, install: `apt install iptables-persistent`
-
-Use /ddos_status to check current rules
-Use /ddos_disable to disable protection
-    """
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
-    run_command("echo '$(date): DDoS protection enabled via Telegram' >> /var/log/bdrman.log")
-
-async def ddos_protection_disable(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("⚠️ *Disabling DDoS Protection*\n\nRemoving iptables rules...")
-    
-    # Flush specific chains
-    run_command("iptables -D INPUT -p tcp --syn -m limit --limit 1/s --limit-burst 3 -j ACCEPT 2>/dev/null || true")
-    run_command("iptables -D INPUT -p tcp --syn -j DROP 2>/dev/null || true")
-    run_command("iptables -D INPUT -p icmp --icmp-type echo-request -m limit --limit 1/s -j ACCEPT 2>/dev/null || true")
-    run_command("iptables -D INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || true")
-    run_command("iptables -F port-scanning 2>/dev/null || true")
-    run_command("iptables -X port-scanning 2>/dev/null || true")
-    
-    # Remove connection limits
-    run_command("iptables -D INPUT -p tcp --dport 80 -m connlimit --connlimit-above 20 -j REJECT 2>/dev/null || true")
-    run_command("iptables -D INPUT -p tcp --dport 443 -m connlimit --connlimit-above 20 -j REJECT 2>/dev/null || true")
-    
-    await update.message.reply_text("✅ DDoS protection rules removed!\n\n⚠️ Server is now less protected against attacks.", parse_mode='Markdown')
-    run_command("echo '$(date): DDoS protection disabled via Telegram' >> /var/log/bdrman.log")
-
-async def ddos_protection_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🔍 Checking DDoS protection status...")
-    
-    # Check for DDoS rules
-    syn_flood = run_command("iptables -L INPUT -n | grep -c 'limit: avg 1/sec burst 3' 2>/dev/null || echo '0'").strip()
-    icmp_flood = run_command("iptables -L INPUT -n | grep -c 'icmp type 8 limit' 2>/dev/null || echo '0'").strip()
-    port_scan = run_command("iptables -L port-scanning -n 2>/dev/null | wc -l").strip()
-    conn_limit = run_command("iptables -L INPUT -n | grep -c 'connlimit-above' 2>/dev/null || echo '0'").strip()
-    
-    # Current connections
-    total_conn = run_command("ss -tunap 2>/dev/null | grep ESTAB | wc -l").strip()
-    http_conn = run_command("ss -tunap 2>/dev/null | grep :80 | grep ESTAB | wc -l").strip()
-    https_conn = run_command("ss -tunap 2>/dev/null | grep :443 | grep ESTAB | wc -l").strip()
-    
-    # Recent blocks
-    recent_drops = run_command("iptables -L INPUT -n -v | grep DROP | head -5").strip()
-    
-    status = "🟢 Active" if int(syn_flood) > 0 or int(icmp_flood) > 0 else "🔴 Inactive"
-    
-    report = f"""
-🛡️ *DDoS Protection Status*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-*Protection Status:* {status}
-
-*Active Rules:*
-• SYN Flood Protection: {'✅' if int(syn_flood) > 0 else '❌'}
-• ICMP Flood Protection: {'✅' if int(icmp_flood) > 0 else '❌'}
-• Port Scan Protection: {'✅' if int(port_scan) > 0 else '❌'}
-• Connection Limiting: {'✅' if int(conn_limit) > 0 else '❌'}
-
-*Current Connections:*
-• Total: {total_conn}
-• HTTP (80): {http_conn}
-• HTTPS (443): {https_conn}
-
-*Top IPs Connected:*
-```
-{run_command("ss -tunap 2>/dev/null | grep ESTAB | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -5").strip()}
-```
-
-Use /ddos_enable to activate protection
-Use /ddos_disable to deactivate protection
-    """
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
-
-async def caprover_protection_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🚢⚡ *Quick CapRover Protection*\n\nApplying emergency protection...")
-    
-    # Quick protection for CapRover
-    commands = [
-        # Limit connections to CapRover ports
-        "iptables -A INPUT -p tcp --dport 3000 -m connlimit --connlimit-above 10 -j REJECT",
-        "iptables -A INPUT -p tcp --dport 80 -m connlimit --connlimit-above 30 -j REJECT",
-        "iptables -A INPUT -p tcp --dport 443 -m connlimit --connlimit-above 30 -j REJECT",
-        
-        # Rate limit
-        "iptables -A INPUT -p tcp --dport 3000 -m state --state NEW -m recent --set",
-        "iptables -A INPUT -p tcp --dport 3000 -m state --state NEW -m recent --update --seconds 1 --hitcount 5 -j DROP",
-    ]
-    
-    for cmd in commands:
-        run_command(cmd)
-    
-    # Restart CapRover nginx if needed
-    caprover_nginx = run_command("docker ps --filter 'name=captain-nginx' --format '{{.Names}}'").strip()
-    if caprover_nginx:
-        run_command(f"docker restart {caprover_nginx}")
-    
-    report = """
-✅ *CapRover Emergency Protection Active!*
-
-Protected ports:
-• 3000 (CapRover Dashboard) - Max 10 connections per IP
-• 80 (HTTP) - Max 30 connections per IP  
-• 443 (HTTPS) - Max 30 connections per IP
-
-Rate limits:
-• CapRover: 5 requests/second per IP
-
-CapRover Nginx: Restarted ✅
-
-*This is a temporary emergency protection.*
-Use /ddos_enable for full DDoS protection.
-    """
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
-    run_command("echo '$(date): CapRover emergency protection activated via Telegram' >> /var/log/bdrman.log")
-
-# ============= CAPROVER BACKUP TELEGRAM COMMANDS =============
-
-async def caprover_backup_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🚢 Starting CapRover backup process...")
-    
-    # Check if volumes directory exists
-    volumes_dir = "/var/lib/docker/volumes"
-    if not run_command(f"test -d {volumes_dir} && echo 'exists'").strip():
-        await update.message.reply_text("❌ Docker volumes directory not found. Make sure Docker and CapRover are installed.")
-        return
-    
-    # List CapRover volumes
-    volumes_list = run_command("ls -1 /var/lib/docker/volumes/ | grep -E '(captain-|cap-)' | head -10").strip()
-    
-    if not volumes_list:
-        await update.message.reply_text("⚠️ No CapRover volumes found with 'captain-' or 'cap-' prefix.")
-        return
-    
-    volumes = volumes_list.split('\n')
-    
-    # Create backup directory with Turkey timezone
-    backup_base = "/root/capBackup"
-    # Set Turkey timezone and format as dd-mm-yyyy + hh-mm
-    date_folder = subprocess.run("TZ='Europe/Istanbul' date +%d-%m-%Y", shell=True, capture_output=True, text=True).stdout.strip()
-    time_stamp = subprocess.run("TZ='Europe/Istanbul' date +%H-%M", shell=True, capture_output=True, text=True).stdout.strip()
-    backup_dir = f"{backup_base}/{date_folder}"
-    
-    run_command(f"mkdir -p {backup_dir}")
-    
-    await update.message.reply_text(f"📦 Found {len(volumes)} CapRover volume(s):\n{chr(10).join(f'• {v}' for v in volumes[:5])}")
-    
-    if len(volumes) > 5:
-        await update.message.reply_text(f"... and {len(volumes) - 5} more volumes")
-    
-    await update.message.reply_text("🔄 Creating backups for all volumes...")
-    
-    backed_up = 0
-    total_size = 0
-    
-    for volume in volumes:
-        volume_path = f"/var/lib/docker/volumes/{volume}/_data"
-        
-        if not run_command(f"test -d {volume_path} && echo 'exists'").strip():
-            continue
-            
-        backup_file = f"{backup_dir}/{volume}_{time_stamp}.tar.gz"
-        
-        # Create backup
-        result = run_command(f"tar -czf {backup_file} -C /var/lib/docker/volumes/{volume} _data 2>&1")
-        
-        if "error" not in result.lower() and run_command(f"test -f {backup_file} && echo 'exists'").strip():
-            size = run_command(f"du -sh {backup_file} | cut -f1").strip()
-            backed_up += 1
-        else:
-            # Remove failed backup file
-            run_command(f"rm -f {backup_file}")
-    
-    if backed_up > 0:
-        total_dir_size = run_command(f"du -sh {backup_dir} | cut -f1").strip()
-        
-        await update.message.reply_text(
-            f"✅ *CapRover Backup Completed!*\n\n"
-            f"📦 Volumes backed up: {backed_up}/{len(volumes)}\n"
-            f"💾 Total size: {total_dir_size}\n"
-            f"📁 Location: `{backup_dir}`\n"
-            f"📅 Date: {date_folder} {time_stamp.replace('-', ':')}\n\n"
-            f"Use /caplist to view backup history",
-            parse_mode='Markdown'
-        )
-    else:
-        await update.message.reply_text("❌ No volumes were successfully backed up!")
-
-async def caprover_list_backups_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    backup_base = "/root/capBackup"
-    
-    if not run_command(f"test -d {backup_base} && echo 'exists'").strip():
-        await update.message.reply_text("📁 No CapRover backups found. Create your first backup with /capbackup")
-        return
-    
-    # Get date folders (dd-mm-yyyy format)
-    date_folders = run_command(f"ls -1 {backup_base} | grep -E '^[0-9]{{2}}-[0-9]{{2}}-[0-9]{{4}}$' | sort -r | head -10").strip()
-    
-    if not date_folders:
-        await update.message.reply_text("📅 No backup dates found.")
-        return
-    
-    folders = date_folders.split('\n')
-    total_size = run_command(f"du -sh {backup_base} | cut -f1").strip()
-    total_files = run_command(f"find {backup_base} -name '*.tar.gz' | wc -l").strip()
-    
-    report = f"📋 *CapRover Backup History*\n\n"
-    report += f"💾 Total size: {total_size}\n"
-    report += f"📦 Total files: {total_files}\n"
-    report += f"📅 Backup days: {len(folders)}\n\n"
-    
-    report += "*Recent backups:*\n"
-    
-    for folder in folders[:5]:  # Show last 5 days
-        folder_path = f"{backup_base}/{folder}"
-        folder_size = run_command(f"du -sh {folder_path} | cut -f1").strip()
-        file_count = run_command(f"ls -1 {folder_path}/*.tar.gz 2>/dev/null | wc -l").strip()
-        
-        report += f"📅 `{folder}` ({file_count} files, {folder_size})\n"
-    
-    if len(folders) > 5:
-        report += f"\n... and {len(folders) - 5} more days"
-    
-    report += f"\n📁 Path: `{backup_base}`"
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
-
-# RESTORE REMOVED FOR SECURITY - Use main interface for restore operations
-
-async def caprover_cleanup_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    backup_base = "/root/capBackup"
-    
-    if not run_command(f"test -d {backup_base} && echo 'exists'").strip():
-        await update.message.reply_text("📁 No backup directory found.")
-        return
-    
-    await update.message.reply_text("🧹 Analyzing CapRover backup storage...")
-    
-    # Get current stats
-    total_size = run_command(f"du -sh {backup_base} | cut -f1").strip()
-    total_files = run_command(f"find {backup_base} -name '*.tar.gz' | wc -l").strip()
-    
-    # Clean backups older than 30 days
-    old_files_count = run_command(f"find {backup_base} -name '*.tar.gz' -type f -mtime +30 | wc -l").strip()
-    
-    report = f"📊 *Current backup usage:*\n"
-    report += f"💾 Total size: {total_size}\n"
-    report += f"📦 Total files: {total_files}\n"
-    report += f"🗑️ Files older than 30 days: {old_files_count}\n\n"
-    
-    if int(old_files_count) > 0:
-        await update.message.reply_text(report + "🔄 Cleaning old backups...")
-        
-        # Delete old files
-        deleted = run_command(f"find {backup_base} -name '*.tar.gz' -type f -mtime +30 -delete -print | wc -l").strip()
-        
-        # Clean empty directories
-        run_command(f"find {backup_base} -type d -empty -delete")
-        
-        # Get new stats
-        new_total_size = run_command(f"du -sh {backup_base} | cut -f1").strip()
-        new_total_files = run_command(f"find {backup_base} -name '*.tar.gz' | wc -l").strip()
-        
-        cleanup_report = f"✅ *Cleanup completed!*\n\n"
-        cleanup_report += f"🗑️ Deleted files: {deleted}\n"
-        cleanup_report += f"💾 Size: {new_total_size} (was {total_size})\n"
-        cleanup_report += f"📦 Files: {new_total_files} (was {total_files})\n\n"
-        cleanup_report += "🧹 Cleaned up backups older than 30 days"
-        
-        await update.message.reply_text(cleanup_report, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(report + "✨ No old backups to clean. Storage is optimized!")
-
-# ============= EMERGENCY MODE EXIT =============
-
-async def emergency_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    await update.message.reply_text("🟢 *Exiting Emergency Mode*\n\n⏳ Starting stopped services...\n_(Nothing will be reinstalled!)_")
-    
-    # Start stopped services (NOT reinstall!)
-    run_command("systemctl start nginx 2>/dev/null")
-    run_command("systemctl start apache2 2>/dev/null")
-    
-    # Start stopped Docker containers (NOT rebuild!)
-    run_command("docker start $(docker ps -aq) 2>/dev/null")
-    
-    # Reopen firewall ports
-    commands = [
-        "ufw default deny incoming",
-        "ufw default allow outgoing",
-        "ufw allow 22/tcp",
-        "ufw allow 80/tcp",
-        "ufw allow 443/tcp",
-        "ufw allow 3000/tcp",
-        "ufw --force enable"
-    ]
-    
-    for cmd in commands:
-        run_command(cmd)
-    
-    report = """
-✅ *NORMAL MODE ACTIVE!*
-
-🔄 *Services Started:*
-• Nginx (started, not reinstalled)
-• Docker containers (started, not rebuilt)
-• All system services (running again)
-
-🔥 *Firewall Ports Reopened:*
-• Port 22 (SSH)
-• Port 80 (HTTP)
-• Port 443 (HTTPS)
-• Port 3000 (CapRover)
-
-⚠️ *No data deleted, nothing reinstalled!*
-Just a simple START operation.
-
-📊 System is back to normal operations!
-Use /status to check current state.
-    """
-    
-    await update.message.reply_text(report, parse_mode='Markdown')
-    run_command("echo '$(date): Emergency mode exited via Telegram' >> /var/log/bdrman.log")
-
-# ============= FUN & USEFUL COMMANDS =============
-
-async def server_joke(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    jokes = [
-        "Why do programmers prefer dark mode? 🌙\nBecause light attracts bugs! 🐛",
-        "Why did the server go to therapy? 🛋️\nIt had too many issues! 😅",
-        "What's a sysadmin's favorite tea? ☕\nNetworking! 🌐",
-        "Why don't servers ever get tired? 💪\nThey're always running! 🏃",
-        "What do you call a server that's always down? 📉\nA downtime champion! 🏆",
-        "Why do servers make terrible comedians? 🎭\nTheir jokes always time out! ⏰"
-    ]
-    
-    import random
-    joke = random.choice(jokes)
-    await update.message.reply_text(f"😄 *Server Joke Time!*\n\n{joke}")
-
-async def server_fortune(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    fortune = run_command("fortune 2>/dev/null || echo 'Fortune not installed. Your fortune: Everything will run smoothly today! 🍀'")
-    
-    await update.message.reply_text(f"🔮 *Server Fortune*\n\n{fortune}")
-
-async def server_cowsay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def block_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     
     if len(context.args) == 0:
-        message = "Your server is doing great!"
+        await update.message.reply_text("Usage: /block <ip>")
+        return
+    
+    ip = context.args[0]
+    # Validate IP
+    try:
+        socket.inet_aton(ip)
+    except socket.error:
+        await update.message.reply_text("❌ Invalid IP address.")
+        return
+        
+    run_command(["ufw", "deny", "from", ip])
+    await update.message.reply_text(f"✅ IP {ip} blocked.")
+
+# --- PIN Protected Commands ---
+
+async def pin_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start PIN verification flow"""
+    if not await is_authorized(update):
+        return ConversationHandler.END
+        
+    context.user_data['pending_command'] = context.args
+    context.user_data['command_name'] = update.message.text.split()[0]
+    
+    await update.message.reply_text(f"🔒 *PIN REQUIRED*\n\nPlease enter the 4-digit PIN to execute `{context.user_data['command_name']}`:", parse_mode='Markdown')
+    return PIN_CHECK
+
+async def pin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_pin = update.message.text.strip()
+    
+    if user_pin == PIN_CODE:
+        cmd_name = context.user_data.get('command_name')
+        await update.message.reply_text("✅ PIN Accepted. Executing...")
+        
+        if cmd_name == '/emergency_exit':
+            await emergency_exit_exec(update, context)
+        elif cmd_name == '/snapshot':
+            await create_snapshot_exec(update, context)
+            
+        return ConversationHandler.END
     else:
-        message = ' '.join(context.args)
-    
-    cow = run_command(f"cowsay '{message}' 2>/dev/null || echo 'Cowsay not installed. 🐮 says: {message}'")
-    
-    await update.message.reply_text(f"🐮 *Cow Says:*\n\n```\n{cow}\n```", parse_mode='Markdown')
+        await update.message.reply_text("❌ Incorrect PIN. Action cancelled.")
+        return ConversationHandler.END
 
-async def server_stats_fun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    uptime = run_command("uptime -p").strip()
-    kernel = run_command("uname -r").strip()
-    hostname = run_command("hostname").strip()
-    load = run_command("uptime | awk -F'load average:' '{print $2}'").strip()
-    
-    # Fun facts
-    total_files = run_command("find / -type f 2>/dev/null | wc -l").strip()
-    total_dirs = run_command("find / -type d 2>/dev/null | wc -l").strip()
-    
-    report = f"""
-🎉 *Fun Server Stats!*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚫 Cancelled.")
+    return ConversationHandler.END
 
-🖥️ *Your Server:* {hostname}
-⏱️ *Been running for:* {uptime}
-🐧 *Kernel:* {kernel}
-📈 *Load:* {load}
+async def emergency_exit_exec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🟢 Exiting Emergency Mode...")
+    # Execute bash commands safely
+    run_command(["systemctl", "start", "nginx"])
+    run_command(["systemctl", "start", "docker"])
+    run_command(["ufw", "allow", "22/tcp"])
+    run_command(["ufw", "allow", "80/tcp"])
+    run_command(["ufw", "allow", "443/tcp"])
+    await update.message.reply_text("✅ Services started & Ports opened.")
 
-🎲 *Fun Facts:*
-• You have {total_files} files!
-• And {total_dirs} directories!
-
-Keep up the good work! 💪
-    """
+async def create_snapshot_exec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📸 Creating snapshot...")
+    # Trigger the bash function via a wrapper or direct command
+    # Since this is python, we'll call rsync directly
+    ts = run_command(["date", "+%Y%m%d_%H%M%S"]).strip()
+    name = f"snapshot_{ts}"
+    path = f"/var/snapshots/{name}"
     
-    await update.message.reply_text(report, parse_mode='Markdown')
-
-async def server_ascii_art(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
+    os.makedirs(path, exist_ok=True)
+    cmd = ["rsync", "-aAX", "--delete", "--exclude=/dev", "--exclude=/proc", "--exclude=/sys", "--exclude=/tmp", "--exclude=/run", "--exclude=/mnt", "--exclude=/var/snapshots", "/", f"{path}/"]
     
-    art = """
-```
-    _____ ______ _______      ________ _____  
-   / ____|  ____|  __ \\ \\    / /  ____|  __ \\ 
-  | (___ | |__  | |__) \\ \\  / /| |__  | |__) |
-   \\___ \\|  __| |  _  / \\ \\/ / |  __| |  _  / 
-   ____) | |____| | \\ \\  \\  /  | |____| | \\ \\ 
-  |_____/|______|_|  \\_\\  \\/   |______|_|  \\_\\
-                                              
-       POWERED BY BDRMAN 🚀
-```
-    """
-    
-    await update.message.reply_text(art, parse_mode='Markdown')
-
-async def server_tips(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    
-    tips = [
-        "💡 *Tip:* Regularly update your system with /update",
-        "💡 *Tip:* Always backup before major changes! Use /capbackup",
-        "💡 *Tip:* Monitor your disk space with /disk",
-        "💡 *Tip:* Enable DDoS protection with /ddos_enable",
-        "💡 *Tip:* Check your server health with /health",
-        "💡 *Tip:* Use /caprover_protect during high traffic",
-        "💡 *Tip:* Review firewall rules with /firewall",
-        "💡 *Tip:* Create snapshots before risky operations",
-        "💡 *Tip:* Block suspicious IPs with /block <ip>",
-        "💡 *Tip:* Keep your Docker containers updated!"
-    ]
-    
-    import random
-    tip = random.choice(tips)
-    await update.message.reply_text(tip, parse_mode='Markdown')
+    # Run in background or wait? Snapshots take time.
+    # For simplicity in this bot, we wait (timeout might occur)
+    # Better: run in background
+    subprocess.Popen(cmd)
+    await update.message.reply_text(f"✅ Snapshot started: `{name}`\n(Running in background)", parse_mode='Markdown')
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Basic commands
+    # Basic
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("about", about))
-    
-    # Monitoring
     application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("health", health_check))
-    application.add_handler(CommandHandler("docker", docker_status))
-    application.add_handler(CommandHandler("containers", containers_detailed))
-    application.add_handler(CommandHandler("services", services_status))
-    application.add_handler(CommandHandler("logs", view_logs))
-    application.add_handler(CommandHandler("disk", disk_usage))
-    application.add_handler(CommandHandler("memory", memory_usage))
-    application.add_handler(CommandHandler("uptime", uptime_info))
-    application.add_handler(CommandHandler("network", network_info))
-    application.add_handler(CommandHandler("top", top_processes))
     
     # Management
     application.add_handler(CommandHandler("vpn", vpn_create))
-    application.add_handler(CommandHandler("restart", restart_service))
-    application.add_handler(CommandHandler("backup", create_backup))
-    application.add_handler(CommandHandler("snapshot", create_snapshot))
-    application.add_handler(CommandHandler("update", system_update))
-    
-    # CapRover Backup
-    application.add_handler(CommandHandler("capbackup", caprover_backup_telegram))
-    application.add_handler(CommandHandler("caplist", caprover_list_backups_telegram))
-    application.add_handler(CommandHandler("capclean", caprover_cleanup_telegram))
-    
-    # DDoS Protection (NEW)
-    application.add_handler(CommandHandler("ddos_enable", ddos_protection_enable))
-    application.add_handler(CommandHandler("ddos_disable", ddos_protection_disable))
-    application.add_handler(CommandHandler("ddos_status", ddos_protection_status))
-    application.add_handler(CommandHandler("caprover_protect", caprover_protection_quick))
-    
-    # Emergency Mode Exit (NEW)
-    application.add_handler(CommandHandler("emergency_exit", emergency_exit))
-    
-    # Fun & Useful Commands (NEW)
-    application.add_handler(CommandHandler("joke", server_joke))
-    application.add_handler(CommandHandler("fortune", server_fortune))
-    application.add_handler(CommandHandler("cowsay", server_cowsay))
-    application.add_handler(CommandHandler("funstats", server_stats_fun))
-    application.add_handler(CommandHandler("ascii", server_ascii_art))
-    application.add_handler(CommandHandler("tip", server_tips))
-    
-    # Firewall & Security
-    application.add_handler(CommandHandler("firewall", firewall_status))
-    application.add_handler(CommandHandler("block", block_ip))
     application.add_handler(CommandHandler("ssl", get_ssl))
+    application.add_handler(CommandHandler("block", block_ip))
     
-    # DANGEROUS COMMANDS REMOVED FOR SECURITY:
-    # - /emergency (emergency mode)
-    # - /exec (arbitrary command execution)
-    # - /caprestore (risky restore operation)
+    # PIN Protected Conversation
+    pin_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("emergency_exit", pin_request),
+            CommandHandler("snapshot", pin_request)
+        ],
+        states={
+            PIN_CHECK: [MessageHandler(filters.TEXT & ~filters.COMMAND, pin_verify)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
+    application.add_handler(pin_handler)
     
-    print(f"🤖 Bot started! Waiting for commands...")
-    print(f"📱 Chat ID: {ALLOWED_CHAT_ID}")
+    print(f"🤖 Bot started for {SERVER_NAME}...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
@@ -4402,25 +3477,21 @@ advanced_menu(){
     clear_and_banner
     echo "=== ADVANCED TOOLS ==="
     echo "0) Back"
-    echo "1) Database Management"
-    echo "2) Nginx Management"
-    echo "3) User Management"
-    echo "4) Network Diagnostics"
-    echo "5) Performance & Cleanup"
-    echo "6) System Snapshot & Restore"
-    echo "7) Configuration as Code"
-    echo "8) Advanced Firewall"
-    read -rp "Select (0-8): " c
+    echo "1) Nginx Management"
+    echo "2) Network Diagnostics"
+    echo "3) Performance & Cleanup"
+    echo "4) System Snapshot & Restore"
+    echo "5) Configuration as Code"
+    echo "6) Advanced Firewall"
+    read -rp "Select (0-6): " c
     case "$c" in
       0) break ;;
-      1) db_menu_main; pause ;;
-      2) nginx_manage; pause ;;
-      3) user_manage; pause ;;
-      4) network_diag; pause ;;
-      5) perf_optimize; pause ;;
-      6) snapshot_menu; pause ;;
-      7) config_menu; pause ;;
-      8) firewall_advanced; pause ;;
+      1) nginx_manage; pause ;;
+      2) network_diag; pause ;;
+      3) perf_optimize; pause ;;
+      4) snapshot_menu; pause ;;
+      5) config_menu; pause ;;
+      6) firewall_advanced; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
