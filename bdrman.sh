@@ -1001,61 +1001,142 @@ logs_custom_search(){
 }
 
 # ============= BACKUP & RESTORE =============
+# ============= BACKUP & RESTORE =============
 backup_create(){
-  echo "=== CREATE BACKUP ==="
+  local type="${1:-config}" # config, data, full
+  echo "=== CREATE BACKUP ($type) ==="
   
-  # Acquire lock to prevent concurrent backups
   acquire_lock "backup_create" || return 1
   
-  # Ensure directory exists and has correct permissions
   if [ ! -d "$BACKUP_DIR" ]; then
     mkdir -p "$BACKUP_DIR"
     chmod 700 "$BACKUP_DIR"
   fi
   
   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-  BACKUP_FILE="$BACKUP_DIR/backup_$TIMESTAMP.tar.gz"
-  BACKUP_PARTIAL="${BACKUP_FILE}.partial"
+  BACKUP_FILE="$BACKUP_DIR/backup_${type}_$TIMESTAMP.tar.gz"
   ERROR_LOG="/tmp/bdrman_backup_error.log"
   
-  echo "Creating backup at: $BACKUP_FILE"
-  echo "(Using atomic write - .partial → final)"
-  
-  # Build list of files to backup dynamically
   BACKUP_LIST=()
-  [ -f "$LOGFILE" ] && BACKUP_LIST+=("$LOGFILE")
-  [ -d "/etc/bdrman" ] && BACKUP_LIST+=("/etc/bdrman")
-  [ -d "/etc/wireguard" ] && BACKUP_LIST+=("/etc/wireguard")
-  [ -d "/etc/ufw" ] && BACKUP_LIST+=("/etc/ufw")
-  [ -d "/etc/nginx" ] && BACKUP_LIST+=("/etc/nginx")
-  [ -f "/etc/ssh/sshd_config" ] && BACKUP_LIST+=("/etc/ssh/sshd_config")
+  
+  case "$type" in
+    config)
+      [ -f "$LOGFILE" ] && BACKUP_LIST+=("$LOGFILE")
+      [ -d "/etc/bdrman" ] && BACKUP_LIST+=("/etc/bdrman")
+      [ -d "/etc/wireguard" ] && BACKUP_LIST+=("/etc/wireguard")
+      [ -d "/etc/ufw" ] && BACKUP_LIST+=("/etc/ufw")
+      [ -d "/etc/nginx" ] && BACKUP_LIST+=("/etc/nginx")
+      [ -f "/etc/ssh/sshd_config" ] && BACKUP_LIST+=("/etc/ssh/sshd_config")
+      ;;
+    data)
+      # Backup common data directories
+      BACKUP_LIST+=("/var/www")
+      [ -d "/var/lib/docker/volumes" ] && BACKUP_LIST+=("/var/lib/docker/volumes")
+      ;;
+    full)
+      # Full system backup (careful exclusions)
+      BACKUP_LIST+=("/")
+      EXCLUDE_PARAMS="--exclude=/proc --exclude=/sys --exclude=/dev --exclude=/tmp --exclude=/run --exclude=/mnt --exclude=/media --exclude=/lost+found --exclude=$BACKUP_DIR"
+      ;;
+  esac
   
   if [ ${#BACKUP_LIST[@]} -eq 0 ]; then
-    echo "❌ No files found to backup!"
+    error "No files found to backup for type: $type"
     return 1
   fi
   
-  echo "   Backing up: ${BACKUP_LIST[*]}"
+  echo "   Backing up ($type): ${BACKUP_LIST[*]}"
   
-  # Create backup with timeout and atomic write
-  # Capture stderr to log file for debugging
-  if timeout "${BACKUP_TIMEOUT:-600}" tar -czf "$BACKUP_PARTIAL" "${BACKUP_LIST[@]}" 2>"$ERROR_LOG"; then
-    
-    # Move to final location only on success
-    mv "$BACKUP_PARTIAL" "$BACKUP_FILE"
-    echo "✅ Backup created: $BACKUP_FILE"
-    log_success "Backup created: $BACKUP_FILE"
-    rm -f "$ERROR_LOG"
+  # Progress indicator (simple spinner as pv might not be installed)
+  echo "   ⏳ Processing... Please wait."
+  
+  if [ "$type" == "full" ]; then
+    tar czf "$BACKUP_FILE" $EXCLUDE_PARAMS "${BACKUP_LIST[@]}" 2>"$ERROR_LOG"
   else
-    # Cleanup partial file
-    rm -f "$BACKUP_PARTIAL"
-    echo "❌ Backup failed!"
-    echo "   Error details:"
+    tar czf "$BACKUP_FILE" "${BACKUP_LIST[@]}" 2>"$ERROR_LOG"
+  fi
+  
+  if [ $? -eq 0 ]; then
+    success "Backup created: $BACKUP_FILE"
+    log_success "Backup ($type) created: $BACKUP_FILE"
+  else
+    error "Backup failed!"
     cat "$ERROR_LOG"
-    log_error "Backup creation failed. See $ERROR_LOG"
+    log_error "Backup failed. See $ERROR_LOG"
+    rm -f "$BACKUP_FILE"
     return 1
+  fi
+  rm -f "$ERROR_LOG"
+}
+
+config_export(){
+  echo "=== EXPORT CONFIG ==="
+  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+  EXPORT_FILE="$BACKUP_DIR/config_export_$TIMESTAMP.tar.gz"
+  
+  if tar czf "$EXPORT_FILE" /etc/bdrman 2>/dev/null; then
+    success "Config exported: $EXPORT_FILE"
+  else
+    error "Export failed."
   fi
 }
+
+config_import(){
+  echo "=== IMPORT CONFIG ==="
+  read -rp "Enter path to config export file: " file
+  if [ -f "$file" ]; then
+    if tar xzf "$file" -C /; then
+      success "Config imported successfully."
+      source /etc/bdrman/bdrman.conf
+    else
+      error "Import failed."
+    fi
+  else
+    error "File not found."
+  fi
+}
+
+# ============= CAPROVER =============
+caprover_install(){
+  echo "=== CAPROVER INSTALLATION ==="
+  echo "⚠️  This will install Docker (if missing) and run CapRover."
+  echo "    CapRover requires ports 80, 443, 3000 to be open."
+  read -rp "Are you sure you want to proceed? (y/n): " ans
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then return; fi
+  
+  # Check Docker
+  if ! command_exists docker; then
+    info "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+  fi
+  
+  info "Starting CapRover..."
+  docker run -d --restart always \
+    -p 80:80 -p 443:443 -p 3000:3000 \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /captain:/captain \
+    --name caprover \
+    caprover/caprover
+    
+  if [ $? -eq 0 ]; then
+    success "CapRover started! Access at http://$(curl -s ifconfig.me):3000"
+    log_success "CapRover installed."
+  else
+    error "CapRover failed to start."
+  fi
+}
+
+caprover_uninstall(){
+  echo "=== CAPROVER UNINSTALL ==="
+  echo "⚠️  WARNING: This will stop CapRover and DELETE all data in /captain!"
+  read -rp "Are you REALLY sure? (type 'yes' to confirm): " ans
+  if [ "$ans" != "yes" ]; then return; fi
+  
+  docker stop caprover && docker rm caprover
+  rm -rf /captain
+  success "CapRover uninstalled and data removed."
+}
+
 
 system_fix_permissions(){
   echo "=== FIXING SYSTEM PERMISSIONS ==="
@@ -4403,23 +4484,45 @@ backup_menu(){
     clear_and_banner
     echo "=== BACKUP & RESTORE ==="
     echo "0) Back"
-    echo "1) Create Backup Now"
-    echo "2) List Backups"
-    echo "3) Restore from Backup"
-    echo "4) Setup Auto Backup (Cron)"
-    echo "5) Send Backup to Remote Server"
-    read -rp "Select (0-5): " c
+    echo "1) Create Config Backup"
+    echo "2) Create Data Backup"
+    echo "3) Create Full System Snapshot"
+    echo "4) List Backups"
+    echo "5) Restore from Backup"
+    echo "6) Export Config (Config-as-Code)"
+    echo "7) Import Config"
+    read -rp "Select (0-7): " c
     case "$c" in
       0) break ;;
-      1) backup_create; pause ;;
-      2) backup_list; pause ;;
-      3) backup_restore; pause ;;
-      4) backup_auto_setup; pause ;;
-      5) backup_remote; pause ;;
+      1) backup_create "config"; pause ;;
+      2) backup_create "data"; pause ;;
+      3) backup_create "full"; pause ;;
+      4) backup_list; pause ;;
+      5) backup_restore; pause ;;
+      6) config_export; pause ;;
+      7) config_import; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
 }
+
+caprover_menu(){
+  while true; do
+    clear_and_banner
+    echo "=== CAPROVER MANAGEMENT ==="
+    echo "0) Back"
+    echo "1) Install CapRover"
+    echo "2) Uninstall CapRover"
+    read -rp "Select (0-2): " c
+    case "$c" in
+      0) break ;;
+      1) caprover_install; pause ;;
+      2) caprover_uninstall; pause ;;
+      *) echo "Invalid choice."; pause ;;
+    esac
+  done
+}
+
 
 security_menu(){
   while true; do
@@ -4749,35 +4852,6 @@ main_menu(){
     clear_and_banner
     echo "1) System Status"
     echo "2) VPN Settings"
-    echo "3) CapRover Settings"
-    echo "4) Firewall Settings"
-    echo "5) Logs & Monitoring"
-    echo "6) Backup & Restore"
-    echo "7) Security & Hardening"
-    echo "8) Monitoring & Alerts"
-    echo "9) Advanced Tools"
-    echo "10) Incident Response 🚨"
-    echo "11) Telegram Bot 📱"
-    echo "12) Quick Commands"
-    echo "13) Exit"
-    read -rp "Select (1-13): " s
-    case "$s" in
-      1)
-        echo "=== SYSTEM STATUS ==="
-        uname -a; echo; uptime; echo; df -h; echo; free -h; pause ;;
-      2) vpn_menu ;;
-      3) caprover_menu ;;
-      4) firewall_menu ;;
-      5) logs_menu ;;
-      6) backup_menu ;;
-      7) security_menu ;;
-      8) monitoring_menu ;;
-      9) advanced_menu ;;
-      10) incident_menu ;;
-      11) telegram_menu ;;
-      12)
-        echo "=== QUICK COMMANDS ==="
-        echo "1) List Docker Containers"
         echo "2) System Update"
         echo "3) Restart All Services"
         read -rp "Choice (Enter = Back): " k
@@ -4917,12 +4991,25 @@ Examples:
 EOF
           exit 0
           ;;
-        *)
-          error "Unknown backup command: $1"
-          echo "Usage: bdrman backup {create|list|restore}"
-          echo "Run 'bdrman backup --help' for more information"
-          exit 1
-          ;;
+        *) show_help ;;
+      esac
+      ;;
+
+    caprover)
+      shift
+      case "$1" in
+        install) caprover_install ;;
+        uninstall) caprover_uninstall ;;
+        *) show_help ;;
+      esac
+      ;;
+
+    config)
+      shift
+      case "$1" in
+        export) config_export ;;
+        import) config_import ;;
+        *) show_help ;;
       esac
       ;;
     

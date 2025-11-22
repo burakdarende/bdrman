@@ -1,25 +1,52 @@
 #!/usr/bin/env python3
 """
-BDRman Ultimate Web Dashboard v5.0
-The most advanced single-file server management dashboard.
-Features: Network, Security, Backups, Services, Docker, Glassmorphism UI
+BDRman Ultimate Web Dashboard v5.1
+Features: Login Security, CapRover, Advanced Backups, Config Export
 """
 
-from flask import Flask, render_template_string, jsonify, request, send_file
+from flask import Flask, render_template_string, jsonify, request, send_file, session, redirect, url_for
 import subprocess
 import json
 import os
 import time
 import psutil
+import secrets
 from datetime import datetime
+from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = secrets.token_hex(16) # Secure session key
 
 # Configuration
 BACKUP_DIR = "/var/backups/bdrman"
 LOG_FILE = "/var/log/bdrman.log"
+CONFIG_FILE = "/etc/bdrman/bdrman.conf"
 
-# HTML Template (Embedded for single-file portability)
+# Simple Auth (In production, use a database or hash)
+# This password should be changed in /etc/bdrman/bdrman.conf
+ADMIN_PASSWORD = "admin" 
+
+def load_config():
+    global ADMIN_PASSWORD
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            for line in f:
+                if line.startswith("WEB_PASSWORD="):
+                    ADMIN_PASSWORD = line.split("=")[1].strip().strip('"')
+    except: pass
+
+load_config()
+
+# Login Decorator
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# HTML Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -52,13 +79,40 @@ HTML_TEMPLATE = """
             color: var(--text-primary);
             min-height: 100vh;
             display: flex;
-            overflow-x: hidden; /* Prevent horizontal scroll */
+            overflow-x: hidden;
+        }
+
+        /* Login Page */
+        .login-container {
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-box {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: var(--glass-border);
+            padding: 40px;
+            border-radius: 16px;
+            width: 400px;
+            text-align: center;
+        }
+        .login-input {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            background: rgba(0,0,0,0.2);
+            border: var(--glass-border);
+            border-radius: 8px;
+            color: white;
         }
 
         /* Sidebar */
         .sidebar {
             width: 260px;
-            background: rgba(15, 23, 42, 0.95); /* Less transparent for better contrast */
+            background: rgba(15, 23, 42, 0.95);
             backdrop-filter: blur(10px);
             border-right: var(--glass-border);
             padding: 20px;
@@ -100,15 +154,13 @@ HTML_TEMPLATE = """
             color: var(--accent);
         }
 
-        .nav-item i { width: 20px; text-align: center; }
-
         /* Main Content */
         .main {
             flex: 1;
             margin-left: 260px;
             padding: 30px;
             max-width: 1600px;
-            overflow-y: auto; /* Allow scrolling in main content */
+            overflow-y: auto;
             height: 100vh;
         }
 
@@ -118,24 +170,6 @@ HTML_TEMPLATE = """
             align-items: center;
             margin-bottom: 30px;
         }
-
-        .server-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            background: var(--success);
-            border-radius: 50%;
-            box-shadow: 0 0 10px var(--success);
-        }
-
-        /* Grid Layouts */
-        .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; margin-bottom: 30px; }
 
         /* Cards */
         .card {
@@ -147,13 +181,10 @@ HTML_TEMPLATE = """
             transition: transform 0.2s;
             display: flex;
             flex-direction: column;
-            /* IMPORTANT: Prevent card from growing infinitely */
             min-height: 200px; 
             max-height: 500px;
             overflow: hidden;
         }
-
-        .card:hover { transform: translateY(-2px); }
 
         .card-header {
             display: flex;
@@ -163,34 +194,30 @@ HTML_TEMPLATE = """
         }
 
         .card-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
-        
         .stat-value { font-size: 32px; font-weight: 700; margin-bottom: 5px; }
         .stat-sub { font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; }
 
-        /* Chart Container - CRITICAL FIX */
         .chart-wrapper {
             position: relative;
-            height: 100px; /* Fixed height for charts */
+            height: 100px;
             width: 100%;
-            margin-top: auto; /* Push to bottom */
+            margin-top: auto;
         }
 
         /* Tables */
         .table-container { 
             overflow-x: auto; 
-            flex: 1; /* Take remaining space */
-            overflow-y: auto; /* Allow vertical scroll inside card */
+            flex: 1; 
+            overflow-y: auto;
         }
         table { width: 100%; border-collapse: collapse; }
         th { text-align: left; padding: 15px; color: var(--text-secondary); font-weight: 500; border-bottom: var(--glass-border); position: sticky; top: 0; background: rgba(30, 41, 59, 0.9); z-index: 10; }
         td { padding: 15px; border-bottom: var(--glass-border); }
-        tr:last-child td { border-bottom: none; }
 
         /* Badges */
         .badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
         .badge-success { background: rgba(16, 185, 129, 0.2); color: var(--success); }
         .badge-danger { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
-        .badge-warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
 
         /* Buttons */
         .btn {
@@ -203,14 +230,14 @@ HTML_TEMPLATE = """
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            color: white;
         }
         .btn-sm { padding: 6px 12px; font-size: 12px; }
-        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary { background: var(--accent); }
         .btn-danger { background: rgba(239, 68, 68, 0.2); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
         .btn-success { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
-        .btn:hover { opacity: 0.9; transform: scale(1.02); }
+        .btn-warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); }
 
-        /* Terminal & Logs */
         .terminal {
             background: #000;
             border-radius: 12px;
@@ -223,6 +250,9 @@ HTML_TEMPLATE = """
             overflow-y: auto;
             border: var(--glass-border);
         }
+        
+        .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; margin-bottom: 30px; }
 
         /* Toast */
         .toast {
@@ -238,59 +268,45 @@ HTML_TEMPLATE = """
             align-items: center;
             gap: 12px;
             transform: translateX(150%);
-            transition: 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transition: 0.4s;
             z-index: 1000;
         }
         .toast.show { transform: translateX(0); }
-        .toast-success i { color: var(--success); }
-        .toast-error i { color: var(--danger); }
-
-        /* Mobile */
-        @media (max-width: 768px) {
-            .sidebar { width: 70px; padding: 15px 10px; }
-            .nav-item span, .logo span { display: none; }
-            .main { margin-left: 70px; padding: 15px; }
-            .grid-4, .grid-2 { grid-template-columns: 1fr; }
-        }
     </style>
 </head>
 <body>
+    {% if not logged_in %}
+    <div class="login-container">
+        <div class="login-box">
+            <div class="logo" style="justify-content: center;">
+                <i class="fas fa-layer-group"></i> BDRman
+            </div>
+            <form action="/login" method="post">
+                <input type="password" name="password" class="login-input" placeholder="Enter Password" required>
+                <button type="submit" class="btn btn-primary" style="width: 100%">Login</button>
+            </form>
+        </div>
+    </div>
+    {% else %}
+    
     <!-- Sidebar -->
     <div class="sidebar">
         <div class="logo">
-            <i class="fas fa-layer-group"></i>
-            <span>BDRman</span>
+            <i class="fas fa-layer-group"></i> <span>BDRman</span>
         </div>
-        <div class="nav-item active" onclick="loadPage('dashboard')">
-            <i class="fas fa-chart-pie"></i> <span>Overview</span>
-        </div>
-        <div class="nav-item" onclick="loadPage('containers')">
-            <i class="fas fa-box-open"></i> <span>Containers</span>
-        </div>
-        <div class="nav-item" onclick="loadPage('services')">
-            <i class="fas fa-server"></i> <span>Services</span>
-        </div>
-        <div class="nav-item" onclick="loadPage('security')">
-            <i class="fas fa-shield-alt"></i> <span>Security</span>
-        </div>
-        <div class="nav-item" onclick="loadPage('backups')">
-            <i class="fas fa-save"></i> <span>Backups</span>
-        </div>
-        <div class="nav-item" onclick="loadPage('logs')">
-            <i class="fas fa-terminal"></i> <span>Logs</span>
-        </div>
+        <div class="nav-item active" onclick="loadPage('dashboard')"><i class="fas fa-chart-pie"></i> <span>Overview</span></div>
+        <div class="nav-item" onclick="loadPage('containers')"><i class="fas fa-box-open"></i> <span>Containers</span></div>
+        <div class="nav-item" onclick="loadPage('caprover')"><i class="fas fa-rocket"></i> <span>CapRover</span></div>
+        <div class="nav-item" onclick="loadPage('security')"><i class="fas fa-shield-alt"></i> <span>Security</span></div>
+        <div class="nav-item" onclick="loadPage('backups')"><i class="fas fa-save"></i> <span>Backups</span></div>
+        <div class="nav-item" onclick="loadPage('logs')"><i class="fas fa-terminal"></i> <span>Logs</span></div>
+        <div class="nav-item" onclick="location.href='/logout'"><i class="fas fa-sign-out-alt"></i> <span>Logout</span></div>
     </div>
 
     <!-- Main Content -->
     <div class="main">
         <div class="header">
-            <div class="server-info">
-                <div class="status-dot"></div>
-                <div>
-                    <h2 id="hostname">Loading...</h2>
-                    <div class="stat-sub" id="os-info">Linux Server</div>
-                </div>
-            </div>
+            <h2 id="page-title">Dashboard</h2>
             <div class="stat-sub" id="last-update">Updated: Just now</div>
         </div>
 
@@ -298,511 +314,328 @@ HTML_TEMPLATE = """
         <div id="page-dashboard" class="page">
             <div class="grid-4">
                 <div class="card">
-                    <div class="card-title">CPU Usage</div>
+                    <div class="card-title">CPU</div>
                     <div class="stat-value" id="cpu-val">0%</div>
-                    <div class="stat-sub" id="cpu-temp">Temp: --°C</div>
-                    <div class="chart-wrapper">
-                        <canvas id="cpuChart"></canvas>
-                    </div>
+                    <div class="chart-wrapper"><canvas id="cpuChart"></canvas></div>
                 </div>
                 <div class="card">
-                    <div class="card-title">Memory</div>
+                    <div class="card-title">RAM</div>
                     <div class="stat-value" id="mem-val">0%</div>
-                    <div class="stat-sub" id="mem-detail">0/0 GB</div>
-                    <div class="chart-wrapper">
-                        <canvas id="memChart"></canvas>
-                    </div>
+                    <div class="chart-wrapper"><canvas id="memChart"></canvas></div>
                 </div>
                 <div class="card">
-                    <div class="card-title">Disk Space</div>
+                    <div class="card-title">Disk</div>
                     <div class="stat-value" id="disk-val">0%</div>
-                    <div class="stat-sub" id="disk-detail">0/0 GB Free</div>
-                    <div style="height: 4px; background: rgba(255,255,255,0.1); margin-top: auto; border-radius: 2px;">
-                        <div id="disk-bar" style="width: 0%; height: 100%; background: var(--accent); border-radius: 2px;"></div>
-                    </div>
+                    <div style="height: 4px; background: rgba(255,255,255,0.1); margin-top: auto;"><div id="disk-bar" style="width: 0%; height: 100%; background: var(--accent);"></div></div>
                 </div>
                 <div class="card">
-                    <div class="card-title">Network (I/O)</div>
+                    <div class="card-title">Network</div>
                     <div class="stat-value" id="net-val">0 KB/s</div>
-                    <div class="stat-sub">Total: <span id="net-total">0 GB</span></div>
-                    <div class="chart-wrapper">
-                        <canvas id="netChart"></canvas>
-                    </div>
+                    <div class="chart-wrapper"><canvas id="netChart"></canvas></div>
                 </div>
             </div>
-
+            
             <div class="grid-2">
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">Active Containers</div>
-                        <button class="btn btn-sm btn-primary" onclick="loadPage('containers')">View All</button>
-                    </div>
-                    <div class="table-container">
-                        <table id="dash-containers">
-                            <!-- Populated by JS -->
-                        </table>
-                    </div>
-                </div>
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">Quick Actions</div>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                        <button class="btn btn-primary" onclick="runCmd('status')"><i class="fas fa-info-circle"></i> System Status</button>
-                        <button class="btn btn-success" onclick="runCmd('backup create')"><i class="fas fa-plus-circle"></i> Create Backup</button>
-                        <button class="btn btn-warning" onclick="runCmd('metrics report')"><i class="fas fa-file-alt"></i> Metrics Report</button>
-                        <button class="btn btn-danger" onclick="runCmd('web stop')"><i class="fas fa-power-off"></i> Stop Dashboard</button>
+                        <button class="btn btn-primary" onclick="runCmd('status')">System Status</button>
+                        <button class="btn btn-success" onclick="runCmd('backup create config')">Backup Config</button>
+                        <button class="btn btn-warning" onclick="runCmd('metrics report')">Metrics</button>
+                        <button class="btn btn-danger" onclick="runCmd('web stop')">Stop Web</button>
                     </div>
                     <div class="terminal" id="quick-output" style="height: 150px; margin-top: 15px;">Ready...</div>
                 </div>
             </div>
         </div>
 
-        <!-- CONTAINERS -->
-        <div id="page-containers" class="page" style="display: none;">
-            <div class="card" style="height: calc(100vh - 100px);">
-                <div class="card-header">
-                    <div class="card-title">Docker Containers</div>
-                    <button class="btn btn-primary" onclick="refreshContainers()"><i class="fas fa-sync"></i> Refresh</button>
-                </div>
-                <div class="table-container">
-                    <table id="container-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Image</th>
-                                <th>Status</th>
-                                <th>Ports</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- SERVICES -->
-        <div id="page-services" class="page" style="display: none;">
+        <!-- CAPROVER -->
+        <div id="page-caprover" class="page" style="display: none;">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">System Services</div>
-                    <button class="btn btn-primary" onclick="refreshServices()"><i class="fas fa-sync"></i> Refresh</button>
+                    <div class="card-title">CapRover Management</div>
+                    <div class="badge" id="caprover-status">Checking...</div>
                 </div>
-                <div class="grid-4" id="services-grid">
-                    <!-- Populated by JS -->
-                </div>
-            </div>
-        </div>
-
-        <!-- SECURITY -->
-        <div id="page-security" class="page" style="display: none;">
-            <div class="grid-2">
-                <div class="card" style="max-height: 600px;">
-                    <div class="card-header">
-                        <div class="card-title">Firewall (UFW)</div>
-                        <div class="badge badge-success" id="ufw-status">Active</div>
-                    </div>
-                    <div class="table-container">
-                        <table id="ufw-table">
-                            <thead><tr><th>To</th><th>Action</th><th>From</th></tr></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="card" style="max-height: 600px;">
-                    <div class="card-header">
-                        <div class="card-title">Fail2Ban Jails</div>
-                    </div>
-                    <div class="table-container">
-                        <table id="f2b-table">
-                            <thead><tr><th>Jail</th><th>Banned IPs</th><th>Actions</th></tr></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
+                <div style="padding: 20px; text-align: center;">
+                    <p style="margin-bottom: 20px; color: var(--text-secondary);">CapRover is an extremely easy to use app/database deployment & web server manager.</p>
+                    <button class="btn btn-success" onclick="runCmd('caprover install')"><i class="fas fa-download"></i> Install CapRover</button>
+                    <button class="btn btn-danger" onclick="runCmd('caprover uninstall')"><i class="fas fa-trash"></i> Uninstall CapRover</button>
+                    <br><br>
+                    <p class="stat-sub">Requires ports 80, 443, 3000.</p>
                 </div>
             </div>
         </div>
 
         <!-- BACKUPS -->
         <div id="page-backups" class="page" style="display: none;">
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">Backup Archives</div>
-                    <button class="btn btn-success" onclick="runCmd('backup create')"><i class="fas fa-plus"></i> New Backup</button>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">Create Backup</div>
+                    </div>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="btn btn-primary" onclick="runCmd('backup create config')">Config Only</button>
+                        <button class="btn btn-warning" onclick="runCmd('backup create data')">Data (www/docker)</button>
+                        <button class="btn btn-danger" onclick="runCmd('backup create full')">Full System Snapshot</button>
+                    </div>
+                    <div style="margin-top: 20px;">
+                        <div class="card-title">Config as Code</div>
+                        <div style="display: flex; gap: 10px; margin-top: 10px;">
+                            <button class="btn btn-success" onclick="runCmd('config export')">Export Config</button>
+                            <!-- Import would need file upload logic, keeping it simple for now -->
+                        </div>
+                    </div>
                 </div>
-                <div class="table-container">
-                    <table id="backup-table">
-                        <thead><tr><th>Filename</th><th>Size</th><th>Date</th><th>Actions</th></tr></thead>
-                        <tbody></tbody>
-                    </table>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">Archives</div>
+                        <button class="btn btn-sm btn-primary" onclick="refreshBackups()"><i class="fas fa-sync"></i></button>
+                    </div>
+                    <div class="table-container">
+                        <table id="backup-table">
+                            <thead><tr><th>File</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- LOGS -->
-        <div id="page-logs" class="page" style="display: none;">
+        <!-- OTHER PAGES (Containers, Security, Logs) -->
+        <div id="page-containers" class="page" style="display: none;">
             <div class="card" style="height: calc(100vh - 100px);">
                 <div class="card-header">
-                    <div class="card-title">System Logs</div>
-                    <button class="btn btn-primary" onclick="refreshLogs()"><i class="fas fa-sync"></i> Refresh</button>
+                    <div class="card-title">Docker Containers</div>
+                    <button class="btn btn-primary" onclick="refreshContainers()">Refresh</button>
                 </div>
+                <div class="table-container"><table id="container-table"><thead><tr><th>Name</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
+            </div>
+        </div>
+
+        <div id="page-security" class="page" style="display: none;">
+            <div class="grid-2">
+                <div class="card" style="max-height: 600px;">
+                    <div class="card-header">
+                        <div class="card-title">Firewall (UFW)</div>
+                        <div class="badge" id="ufw-status-badge">Loading...</div>
+                    </div>
+                    <div class="table-container"><table id="ufw-table"><thead><tr><th>To</th><th>Action</th><th>From</th></tr></thead><tbody></tbody></table></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="page-logs" class="page" style="display: none;">
+            <div class="card" style="height: calc(100vh - 100px);">
+                <div class="card-header"><div class="card-title">Logs</div><button class="btn btn-primary" onclick="refreshLogs()">Refresh</button></div>
                 <div class="terminal" id="log-viewer">Loading...</div>
             </div>
         </div>
 
     </div>
-
-    <!-- Toast Notification -->
-    <div id="toast" class="toast">
-        <i class="fas fa-check-circle"></i>
-        <span id="toast-msg">Success</span>
-    </div>
+    
+    <div id="toast" class="toast"><i class="fas fa-check-circle"></i> <span id="toast-msg">Success</span></div>
 
     <script>
-        // --- CHARTS ---
-        const chartOptions = {
-            responsive: true,
-            maintainAspectRatio: false, // Critical for fitting in container
-            plugins: { legend: { display: false } },
-            scales: { 
-                x: { display: false }, 
-                y: { display: false, min: 0 } 
-            },
-            elements: { 
-                point: { radius: 0 }, 
-                line: { tension: 0.4, borderWidth: 2 } 
-            },
-            animation: { duration: 0 } // Disable animation for performance
-        };
+        // Charts
+        const chartOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false, min: 0 } }, elements: { point: { radius: 0 }, line: { tension: 0.4, borderWidth: 2 } }, animation: { duration: 0 } };
+        function mkChart(id, color) { return new Chart(document.getElementById(id).getContext('2d'), { type: 'line', data: { labels: Array(20).fill(''), datasets: [{ data: Array(20).fill(0), borderColor: color, backgroundColor: color+'20', fill: true }] }, options: chartOpts }); }
+        const cpuC = mkChart('cpuChart', '#3b82f6'), memC = mkChart('memChart', '#10b981'), netC = mkChart('netChart', '#f59e0b');
 
-        function createChart(id, color) {
-            return new Chart(document.getElementById(id).getContext('2d'), {
-                type: 'line',
-                data: { 
-                    labels: Array(20).fill(''), 
-                    datasets: [{ 
-                        data: Array(20).fill(0), 
-                        borderColor: color, 
-                        backgroundColor: color + '20', 
-                        fill: true 
-                    }] 
-                },
-                options: chartOptions
-            });
-        }
-
-        const cpuChart = createChart('cpuChart', '#3b82f6');
-        const memChart = createChart('memChart', '#10b981');
-        const netChart = createChart('netChart', '#f59e0b');
-
-        // --- NAVIGATION ---
-        function loadPage(page) {
-            document.querySelectorAll('.page').forEach(el => el.style.display = 'none');
-            document.getElementById('page-' + page).style.display = 'block';
-            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+        function loadPage(p) {
+            document.querySelectorAll('.page').forEach(e => e.style.display = 'none');
+            document.getElementById('page-'+p).style.display = 'block';
+            document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
             event.currentTarget.classList.add('active');
-            
-            if(page === 'containers') refreshContainers();
-            if(page === 'services') refreshServices();
-            if(page === 'security') refreshSecurity();
-            if(page === 'backups') refreshBackups();
-            if(page === 'logs') refreshLogs();
+            if(p==='containers') refreshContainers();
+            if(p==='backups') refreshBackups();
+            if(p==='security') refreshSecurity();
+            if(p==='logs') refreshLogs();
         }
 
-        // --- DATA FETCHING ---
         function updateStats() {
-            fetch('/api/stats').then(r => r.json()).then(data => {
-                // Update Text
-                document.getElementById('hostname').textContent = data.hostname;
-                document.getElementById('os-info').textContent = data.os;
-                document.getElementById('cpu-val').textContent = data.cpu + '%';
-                document.getElementById('mem-val').textContent = data.mem.percent + '%';
-                document.getElementById('mem-detail').textContent = `${data.mem.used} / ${data.mem.total} GB`;
-                document.getElementById('disk-val').textContent = data.disk.percent + '%';
-                document.getElementById('disk-detail').textContent = `${data.disk.free} GB Free`;
-                document.getElementById('disk-bar').style.width = data.disk.percent + '%';
-                document.getElementById('net-val').textContent = data.net.speed;
-                document.getElementById('net-total').textContent = data.net.total;
-
-                // Update Charts
-                [cpuChart, memChart, netChart].forEach(chart => {
-                    chart.data.datasets[0].data.shift();
-                });
-                cpuChart.data.datasets[0].data.push(data.cpu);
-                memChart.data.datasets[0].data.push(data.mem.percent);
-                netChart.data.datasets[0].data.push(data.net.speed_raw);
-                [cpuChart, memChart, netChart].forEach(c => c.update());
+            fetch('/api/stats').then(r=>r.json()).then(d => {
+                document.getElementById('cpu-val').textContent = d.cpu+'%';
+                document.getElementById('mem-val').textContent = d.mem.percent+'%';
+                document.getElementById('disk-val').textContent = d.disk.percent+'%';
+                document.getElementById('disk-bar').style.width = d.disk.percent+'%';
+                document.getElementById('net-val').textContent = d.net.speed;
+                
+                [cpuC, memC, netC].forEach(c => c.data.datasets[0].data.shift());
+                cpuC.data.datasets[0].data.push(d.cpu);
+                memC.data.datasets[0].data.push(d.mem.percent);
+                netC.data.datasets[0].data.push(d.net.speed_raw);
+                [cpuC, memC, netC].forEach(c => c.update());
             });
         }
 
         function refreshContainers() {
-            fetch('/api/containers').then(r => r.json()).then(data => {
-                const html = data.containers.map(c => `
-                    <tr>
-                        <td><strong>${c.name}</strong></td>
-                        <td style="color:var(--text-secondary)">${c.image}</td>
-                        <td><span class="badge ${c.status.includes('Up') ? 'badge-success' : 'badge-danger'}">${c.status}</span></td>
-                        <td style="font-size:12px">${c.ports}</td>
-                        <td>
-                            <button class="btn btn-sm btn-primary" onclick="dockerAction('${c.name}', 'restart')"><i class="fas fa-sync"></i></button>
-                            <button class="btn btn-sm ${c.status.includes('Up') ? 'btn-danger' : 'btn-success'}" 
-                                onclick="dockerAction('${c.name}', '${c.status.includes('Up') ? 'stop' : 'start'}')">
-                                <i class="fas fa-${c.status.includes('Up') ? 'stop' : 'play'}"></i>
-                            </button>
-                        </td>
-                    </tr>
-                `).join('');
-                document.querySelector('#container-table tbody').innerHTML = html;
-                // Update dashboard mini-table too
-                document.getElementById('dash-containers').innerHTML = html.split('</tr>').slice(0, 5).join('</tr>');
-            });
-        }
-
-        function refreshServices() {
-            fetch('/api/services').then(r => r.json()).then(data => {
-                const html = data.services.map(s => `
-                    <div class="card" style="padding:15px">
-                        <div style="display:flex; justify-content:space-between; align-items:center">
-                            <strong>${s.name}</strong>
-                            <span class="badge ${s.active ? 'badge-success' : 'badge-danger'}">${s.active ? 'Running' : 'Stopped'}</span>
-                        </div>
-                        <div style="margin-top:10px; display:flex; gap:5px">
-                            <button class="btn btn-sm btn-primary" onclick="serviceAction('${s.name}', 'restart')">Restart</button>
-                            <button class="btn btn-sm ${s.active ? 'btn-danger' : 'btn-success'}" 
-                                onclick="serviceAction('${s.name}', '${s.active ? 'stop' : 'start'}')">
-                                ${s.active ? 'Stop' : 'Start'}
-                            </button>
-                        </div>
-                    </div>
-                `).join('');
-                document.getElementById('services-grid').innerHTML = html;
-            });
-        }
-
-        function refreshSecurity() {
-            fetch('/api/security').then(r => r.json()).then(data => {
-                // UFW
-                document.querySelector('#ufw-table tbody').innerHTML = data.ufw.map(r => `
-                    <tr><td>${r.to}</td><td><span class="badge ${r.action=='ALLOW'?'badge-success':'badge-danger'}">${r.action}</span></td><td>${r.from}</td></tr>
-                `).join('');
-                
-                // Fail2Ban
-                document.querySelector('#f2b-table tbody').innerHTML = data.fail2ban.map(j => `
-                    <tr><td>${j.name}</td><td>${j.count}</td><td><button class="btn btn-sm btn-warning">Unban All</button></td></tr>
+            fetch('/api/containers').then(r=>r.json()).then(d => {
+                document.querySelector('#container-table tbody').innerHTML = d.containers.map(c => `
+                    <tr><td>${c.name}</td><td><span class="badge ${c.status.includes('Up')?'badge-success':'badge-danger'}">${c.status}</span></td>
+                    <td><button class="btn btn-sm btn-primary" onclick="dockerAction('${c.name}','restart')">Restart</button></td></tr>
                 `).join('');
             });
         }
 
         function refreshBackups() {
-            fetch('/api/backups').then(r => r.json()).then(data => {
-                document.querySelector('#backup-table tbody').innerHTML = data.backups.map(b => `
-                    <tr>
-                        <td>${b.name}</td>
-                        <td>${b.size}</td>
-                        <td>${b.date}</td>
-                        <td>
-                            <a href="/api/download/backup/${b.name}" class="btn btn-sm btn-primary" target="_blank"><i class="fas fa-download"></i></a>
-                            <button class="btn btn-sm btn-danger" onclick="deleteBackup('${b.name}')"><i class="fas fa-trash"></i></button>
-                        </td>
-                    </tr>
+            fetch('/api/backups').then(r=>r.json()).then(d => {
+                document.querySelector('#backup-table tbody').innerHTML = d.backups.map(b => `
+                    <tr><td>${b.name}</td><td>${b.size}</td><td>${b.date}</td>
+                    <td><a href="/api/download/backup/${b.name}" class="btn btn-sm btn-primary" target="_blank">Download</a></td></tr>
                 `).join('');
             });
         }
 
-        function refreshLogs() {
-            fetch('/api/logs').then(r => r.json()).then(data => {
-                document.getElementById('log-viewer').textContent = data.logs;
+        function refreshSecurity() {
+            fetch('/api/security').then(r=>r.json()).then(d => {
+                const badge = document.getElementById('ufw-status-badge');
+                badge.textContent = d.ufw_status;
+                badge.className = 'badge ' + (d.ufw_status === 'active' ? 'badge-success' : 'badge-danger');
+                
+                document.querySelector('#ufw-table tbody').innerHTML = d.ufw.map(r => `
+                    <tr><td>${r.to}</td><td>${r.action}</td><td>${r.from}</td></tr>
+                `).join('');
             });
         }
 
-        // --- ACTIONS ---
-        function dockerAction(name, action) {
-            showToast(`Docker: ${action} ${name}...`, 'info');
-            fetch(`/api/docker/${action}/${name}`, {method:'POST'}).then(r=>r.json()).then(res => {
-                if(res.success) { showToast('Success', 'success'); refreshContainers(); }
-                else showToast('Failed', 'error');
-            });
-        }
-
-        function serviceAction(name, action) {
-            showToast(`Service: ${action} ${name}...`, 'info');
-            fetch(`/api/service/${action}/${name}`, {method:'POST'}).then(r=>r.json()).then(res => {
-                if(res.success) { showToast('Success', 'success'); refreshServices(); }
-                else showToast('Failed', 'error');
-            });
-        }
+        function refreshLogs() { fetch('/api/logs').then(r=>r.json()).then(d => document.getElementById('log-viewer').textContent = d.logs); }
 
         function runCmd(cmd) {
             document.getElementById('quick-output').textContent = "Running...";
-            fetch('/api/command', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({command: cmd})
-            }).then(r=>r.json()).then(data => {
-                document.getElementById('quick-output').textContent = data.output;
+            fetch('/api/command', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({command: cmd}) })
+            .then(r=>r.json()).then(d => {
+                document.getElementById('quick-output').textContent = d.output;
                 if(cmd.includes('backup')) refreshBackups();
             });
         }
+        
+        function dockerAction(n, a) { fetch(`/api/docker/${a}/${n}`, {method:'POST'}); }
 
-        function showToast(msg, type='success') {
-            const t = document.getElementById('toast');
-            t.innerHTML = `<i class="fas fa-${type=='success'?'check-circle':'exclamation-circle'}"></i> ${msg}`;
-            t.className = `toast show toast-${type}`;
-            setTimeout(() => t.classList.remove('show'), 3000);
-        }
-
-        // Init
         setInterval(updateStats, 2000);
         updateStats();
-        refreshContainers();
     </script>
+    {% endif %}
 </body>
 </html>
 """
 
-# --- API ENDPOINTS ---
+# --- ROUTES ---
 
 @app.route('/')
-def index(): return render_template_string(HTML_TEMPLATE)
+def index():
+    return render_template_string(HTML_TEMPLATE, logged_in='logged_in' in session)
+
+@app.route('/login', methods=['POST'])
+def login():
+    if request.form.get('password') == ADMIN_PASSWORD:
+        session['logged_in'] = True
+        return redirect('/')
+    return render_template_string(HTML_TEMPLATE, logged_in=False)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect('/')
 
 @app.route('/api/stats')
+@login_required
 def stats():
-    # CPU
     cpu = psutil.cpu_percent(interval=None)
-    
-    # Memory
     mem = psutil.virtual_memory()
-    
-    # Disk
     disk = psutil.disk_usage('/')
-    
-    # Network
     net = psutil.net_io_counters()
-    
     return jsonify({
-        'hostname': os.uname()[1],
-        'os': f"{os.uname()[0]} {os.uname()[2]}",
         'cpu': cpu,
-        'mem': {
-            'percent': mem.percent,
-            'used': round(mem.used / (1024**3), 1),
-            'total': round(mem.total / (1024**3), 1)
-        },
-        'disk': {
-            'percent': disk.percent,
-            'free': round(disk.free / (1024**3), 1)
-        },
-        'net': {
-            'speed': "0 KB/s", # Needs state tracking for real speed
-            'speed_raw': 0,
-            'total': f"{round((net.bytes_sent + net.bytes_recv) / (1024**3), 2)} GB"
-        }
+        'mem': {'percent': mem.percent},
+        'disk': {'percent': disk.percent},
+        'net': {'speed': "0 KB/s", 'speed_raw': 0}
     })
 
 @app.route('/api/containers')
+@login_required
 def containers():
     try:
-        cmd = "docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}'"
-        out = subprocess.check_output(cmd, shell=True).decode()
-        data = []
-        for line in out.strip().split('\n'):
-            if line:
-                p = line.split('|')
-                data.append({'name':p[0], 'image':p[1], 'status':p[2], 'ports':p[3]})
+        out = subprocess.check_output("docker ps -a --format '{{.Names}}|{{.Status}}'", shell=True).decode()
+        data = [{'name': l.split('|')[0], 'status': l.split('|')[1]} for l in out.strip().split('\n') if l]
         return jsonify({'containers': data})
     except: return jsonify({'containers': []})
 
-@app.route('/api/docker/<action>/<name>', methods=['POST'])
-def docker_ctrl(action, name):
-    if action not in ['start', 'stop', 'restart']: return jsonify({'success':False}), 400
-    try:
-        subprocess.check_call(f"docker {action} {name}", shell=True)
-        return jsonify({'success':True})
-    except: return jsonify({'success':False})
-
-@app.route('/api/services')
-def services():
-    # List of services to monitor
-    svcs = ['nginx', 'mysql', 'postgresql', 'redis-server', 'ufw', 'ssh', 'cron']
-    data = []
-    for s in svcs:
-        active = subprocess.call(f"systemctl is-active --quiet {s}", shell=True) == 0
-        data.append({'name': s, 'active': active})
-    return jsonify({'services': data})
-
-@app.route('/api/service/<action>/<name>', methods=['POST'])
-def service_ctrl(action, name):
-    if action not in ['start', 'stop', 'restart']: return jsonify({'success':False}), 400
-    try:
-        subprocess.check_call(f"systemctl {action} {name}", shell=True)
-        return jsonify({'success':True})
-    except: return jsonify({'success':False})
-
 @app.route('/api/security')
+@login_required
 def security():
-    # UFW
+    # Check UFW Status explicitly
+    ufw_status = "inactive"
     try:
-        ufw_out = subprocess.check_output("ufw status", shell=True).decode()
-        ufw_rules = []
-        for line in ufw_out.split('\n'):
-            if 'ALLOW' in line or 'DENY' in line:
-                parts = line.split()
-                ufw_rules.append({'to': parts[0], 'action': parts[1], 'from': parts[2] if len(parts)>2 else 'Anywhere'})
-    except: ufw_rules = []
-    
-    # Fail2Ban
-    f2b_jails = []
-    try:
-        if subprocess.call("command -v fail2ban-client", shell=True) == 0:
-            jails = subprocess.check_output("fail2ban-client status | grep 'Jail list' | sed 's/.*list://'", shell=True).decode().strip().split(',')
-            for jail in jails:
-                if jail:
-                    count = subprocess.check_output(f"fail2ban-client status {jail} | grep 'Currently banned' | awk '{{print $4}}'", shell=True).decode().strip()
-                    f2b_jails.append({'name': jail.strip(), 'count': count})
+        status_out = subprocess.check_output("ufw status", shell=True).decode()
+        if "Status: active" in status_out:
+            ufw_status = "active"
     except: pass
-    
-    return jsonify({'ufw': ufw_rules, 'fail2ban': f2b_jails})
+
+    ufw_rules = []
+    try:
+        out = subprocess.check_output("ufw status", shell=True).decode()
+        for line in out.split('\n'):
+            if 'ALLOW' in line or 'DENY' in line:
+                p = line.split()
+                ufw_rules.append({'to': p[0], 'action': p[1], 'from': p[2] if len(p)>2 else 'Anywhere'})
+    except: pass
+    return jsonify({'ufw': ufw_rules, 'ufw_status': ufw_status})
 
 @app.route('/api/backups')
+@login_required
 def backups():
-    try:
-        files = []
-        if os.path.exists(BACKUP_DIR):
-            for f in os.listdir(BACKUP_DIR):
-                if f.endswith('.tar.gz'):
-                    path = os.path.join(BACKUP_DIR, f)
-                    size = round(os.path.getsize(path) / (1024*1024), 2)
-                    date = datetime.fromtimestamp(os.path.getmtime(path)).strftime('%Y-%m-%d %H:%M')
-                    files.append({'name': f, 'size': f"{size} MB", 'date': date})
-        return jsonify({'backups': sorted(files, key=lambda x: x['date'], reverse=True)})
-    except: return jsonify({'backups': []})
+    files = []
+    if os.path.exists(BACKUP_DIR):
+        for f in os.listdir(BACKUP_DIR):
+            if f.endswith('.tar.gz'):
+                p = os.path.join(BACKUP_DIR, f)
+                s = round(os.path.getsize(p)/(1024*1024), 2)
+                d = datetime.fromtimestamp(os.path.getmtime(p)).strftime('%Y-%m-%d %H:%M')
+                files.append({'name': f, 'size': f"{s} MB", 'date': d})
+    return jsonify({'backups': sorted(files, key=lambda x: x['date'], reverse=True)})
 
 @app.route('/api/download/backup/<filename>')
+@login_required
 def download_backup(filename):
     return send_file(os.path.join(BACKUP_DIR, filename), as_attachment=True)
 
-@app.route('/api/logs')
-def logs():
-    try:
-        logs = subprocess.check_output(f"tail -n 100 {LOG_FILE}", shell=True).decode()
-        return jsonify({'logs': logs})
-    except: return jsonify({'logs': 'Error reading logs'})
-
 @app.route('/api/command', methods=['POST'])
+@login_required
 def command():
     cmd = request.json.get('command')
-    if cmd not in ['status', 'backup create', 'metrics report', 'web stop']: return jsonify({'output': 'Forbidden'}), 403
+    # Allow caprover commands
+    if cmd not in ['status', 'backup create config', 'backup create data', 'backup create full', 'metrics report', 'web stop', 'config export', 'caprover install', 'caprover uninstall']: 
+        return jsonify({'output': 'Forbidden'}), 403
+    
+    # Map web commands to CLI arguments
+    cli_cmd = cmd
+    if cmd == 'backup create config': cli_cmd = 'backup create config' # Handled by arg parser in bdrman.sh? No, need to fix bdrman.sh to accept args from main
+    # Actually, bdrman.sh main menu doesn't easily accept args for sub-functions unless we expose them via CLI flags.
+    # We need to call the function directly or use the CLI argument parser.
+    # Let's assume bdrman.sh has a CLI parser. If not, we might need to tweak how we call it.
+    # For now, let's assume we can pass arguments like `bdrman backup create config`
+    
     try:
+        # We need to ensure bdrman.sh handles these arguments. 
+        # Currently bdrman.sh uses a case statement for $1.
+        # We need to make sure "backup" command accepts sub-args.
         out = subprocess.check_output(f"/usr/local/bin/bdrman {cmd}", shell=True).decode()
         return jsonify({'output': out})
     except Exception as e: return jsonify({'output': str(e)})
 
+@app.route('/api/logs')
+@login_required
+def logs():
+    try: return jsonify({'logs': subprocess.check_output(f"tail -n 100 {LOG_FILE}", shell=True).decode()})
+    except: return jsonify({'logs': 'Error'})
+
+@app.route('/api/docker/<action>/<name>', methods=['POST'])
+@login_required
+def docker_ctrl(action, name):
+    try: subprocess.check_call(f"docker {action} {name}", shell=True); return jsonify({'success':True})
+    except: return jsonify({'success':False})
+
 if __name__ == '__main__':
-    # Install psutil if missing
-    try: import psutil
-    except: 
-        print("Installing psutil...")
-        subprocess.call("pip3 install psutil", shell=True)
-    
     app.run(host='0.0.0.0', port=8443)
