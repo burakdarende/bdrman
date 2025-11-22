@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # bdrman - Server Management Panel (English version)
 # Author: Burak Darende
-# Version: 3.2
+# Version: 3.3
 GITHUB_REPO="https://github.com/burakdarende/bdrman"
+
+# Set locale to UTF-8 to fix character display issues (??)
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
 
 # Root check
 if [ "$EUID" -ne 0 ]; then
@@ -16,6 +20,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ============= UPDATE CHECKER =============
+
 check_updates(){
   if [ "$CHECK_UPDATES" = false ]; then
     return
@@ -227,15 +232,25 @@ vpn_status(){
 }
 
 vpn_add_client(){
-  if [ -f "/usr/local/bin/wireguard-install.sh" ]; then
-    bash /usr/local/bin/wireguard-install.sh
-    log "wireguard-install.sh executed"
-  elif [ -f "./wireguard-install.sh" ]; then
-    bash ./wireguard-install.sh
-    log "local wireguard-install.sh executed"
-  else
-    echo "wireguard-install.sh not found. Place it in /usr/local/bin or current directory."
+  WG_SCRIPT="/usr/local/bin/wireguard-install.sh"
+  
+  if [ ! -f "$WG_SCRIPT" ]; then
+    echo "⚠️  wireguard-install.sh not found."
+    echo "⬇️  Downloading from github.com/angristan/wireguard-install..."
+    
+    if curl -s -L "https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh" -o "$WG_SCRIPT"; then
+      chmod +x "$WG_SCRIPT"
+      echo "✅ Download complete."
+    else
+      echo "❌ Failed to download wireguard-install.sh"
+      return 1
+    fi
   fi
+  
+  # Run the script
+  echo "🚀 Launching WireGuard installer..."
+  bash "$WG_SCRIPT"
+  log "wireguard-install.sh executed"
 }
 
 vpn_restart(){
@@ -908,34 +923,95 @@ backup_create(){
   # Acquire lock to prevent concurrent backups
   acquire_lock "backup_create" || return 1
   
-  mkdir -p "$BACKUP_DIR"
+  # Ensure directory exists and has correct permissions
+  if [ ! -d "$BACKUP_DIR" ]; then
+    mkdir -p "$BACKUP_DIR"
+    chmod 700 "$BACKUP_DIR"
+  fi
+  
   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
   BACKUP_FILE="$BACKUP_DIR/backup_$TIMESTAMP.tar.gz"
   BACKUP_PARTIAL="${BACKUP_FILE}.partial"
+  ERROR_LOG="/tmp/bdrman_backup_error.log"
   
   echo "Creating backup at: $BACKUP_FILE"
   echo "(Using atomic write - .partial → final)"
   
+  # Build list of files to backup dynamically
+  BACKUP_LIST=()
+  [ -f "$LOGFILE" ] && BACKUP_LIST+=("$LOGFILE")
+  [ -d "/etc/bdrman" ] && BACKUP_LIST+=("/etc/bdrman")
+  [ -d "/etc/wireguard" ] && BACKUP_LIST+=("/etc/wireguard")
+  [ -d "/etc/ufw" ] && BACKUP_LIST+=("/etc/ufw")
+  [ -d "/etc/nginx" ] && BACKUP_LIST+=("/etc/nginx")
+  [ -f "/etc/ssh/sshd_config" ] && BACKUP_LIST+=("/etc/ssh/sshd_config")
+  
+  if [ ${#BACKUP_LIST[@]} -eq 0 ]; then
+    echo "❌ No files found to backup!"
+    return 1
+  fi
+  
+  echo "   Backing up: ${BACKUP_LIST[*]}"
+  
   # Create backup with timeout and atomic write
-  if timeout "${BACKUP_TIMEOUT:-600}" tar -czf "$BACKUP_PARTIAL" \
-    /etc/wireguard 2>/dev/null \
-    /etc/ufw 2>/dev/null \
-    /etc/nginx 2>/dev/null \
-    /etc/ssh/sshd_config 2>/dev/null \
-    "$LOGFILE" 2>/dev/null; then
+  # Capture stderr to log file for debugging
+  if timeout "${BACKUP_TIMEOUT:-600}" tar -czf "$BACKUP_PARTIAL" "${BACKUP_LIST[@]}" 2>"$ERROR_LOG"; then
     
     # Move to final location only on success
     mv "$BACKUP_PARTIAL" "$BACKUP_FILE"
     echo "✅ Backup created: $BACKUP_FILE"
     log_success "Backup created: $BACKUP_FILE"
+    rm -f "$ERROR_LOG"
   else
     # Cleanup partial file
     rm -f "$BACKUP_PARTIAL"
     echo "❌ Backup failed!"
-    log_error "Backup creation failed"
+    echo "   Error details:"
+    cat "$ERROR_LOG"
+    log_error "Backup creation failed. See $ERROR_LOG"
     return 1
   fi
 }
+
+system_fix_permissions(){
+  echo "=== FIXING SYSTEM PERMISSIONS ==="
+  echo "This will reset permissions for BDRman files and directories."
+  
+  echo -n "🔧 Fixing /etc/bdrman... "
+  mkdir -p /etc/bdrman
+  chown -R root:root /etc/bdrman
+  chmod 700 /etc/bdrman
+  chmod 600 /etc/bdrman/*.conf 2>/dev/null || true
+  chmod 700 /etc/bdrman/*.sh 2>/dev/null || true
+  chmod 700 /etc/bdrman/*.py 2>/dev/null || true
+  echo "✅"
+  
+  echo -n "🔧 Fixing /var/backups/bdrman... "
+  mkdir -p /var/backups/bdrman
+  chown -R root:root /var/backups/bdrman
+  chmod 700 /var/backups/bdrman
+  echo "✅"
+  
+  echo -n "🔧 Fixing logs... "
+  touch "$LOGFILE"
+  chown root:root "$LOGFILE"
+  chmod 640 "$LOGFILE"
+  echo "✅"
+  
+  echo -n "🔧 Fixing executable... "
+  if [ -f /usr/local/bin/bdrman ]; then
+    chown root:root /usr/local/bin/bdrman
+    chmod 755 /usr/local/bin/bdrman
+    echo "✅"
+  else
+    echo "⚠️ (Not found)"
+  fi
+  
+  echo ""
+  echo "✅ Permissions fixed successfully."
+  log_success "System permissions fixed"
+}
+
 
 backup_list(){
   echo "=== AVAILABLE BACKUPS ==="
@@ -2619,8 +2695,16 @@ telegram_setup(){
   echo "2) Your chat ID (send /start to @userinfobot to get it)"
   echo ""
   
+  # Clear stdin buffer to prevent skipping inputs
+  read -t 0.1 -n 10000 discard 2>/dev/null
+  
   read -rp "Bot Token: " bot_token
+  # Remove all whitespace/newlines
+  bot_token=$(echo "$bot_token" | tr -d '[:space:]')
+  
   read -rp "Chat ID: " chat_id
+  # Remove all whitespace/newlines
+  chat_id=$(echo "$chat_id" | tr -d '[:space:]')
   
   if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
     echo "❌ Both token and chat ID are required."
@@ -2629,33 +2713,36 @@ telegram_setup(){
   
   # Validate token format (should look like: 123456789:ABCdefGHI...)
   if [[ ! "$bot_token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
-    echo "⚠️  Warning: Token format looks invalid"
-    read -rp "Continue anyway? (yes/no): " continue_setup
-    [ "$continue_setup" != "yes" ] && return 1
-  fi
-  
-  # Validate chat ID format (should be numeric or start with -)
-  if [[ ! "$chat_id" =~ ^-?[0-9]+$ ]]; then
-    echo "⚠️  Warning: Chat ID should be numeric"
+    echo "⚠️  Warning: Token format looks unusual (Expected format: 123456789:ABC...)"
     read -rp "Continue anyway? (yes/no): " continue_setup
     [ "$continue_setup" != "yes" ] && return 1
   fi
   
   # Test token before saving
   echo "Testing bot token..."
-  if ! curl --fail --max-time 10 -s "https://api.telegram.org/bot${bot_token}/getMe" > /dev/null 2>&1; then
-    echo "❌ Failed to verify bot token. Please check and try again."
-    log_error "Telegram setup failed: invalid bot token"
+  # Use curl to check getMe, capture output
+  RESPONSE=$(curl -s --max-time 10 "https://api.telegram.org/bot${bot_token}/getMe")
+  
+  if echo "$RESPONSE" | grep -q '"ok":true'; then
+    echo "✅ Token verified!"
+    # Extract bot username for confirmation
+    BOT_NAME=$(echo "$RESPONSE" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
+    echo "   Bot Name: @$BOT_NAME"
+  else
+    echo "❌ Failed to verify bot token."
+    echo "   API Response: $RESPONSE"
+    echo "   Please check your token and internet connection."
+    log_error "Telegram setup failed: invalid bot token or connection error"
     return 1
   fi
-  
-  echo "✅ Token verified!"
   
   # Save config securely
   mkdir -p /etc/bdrman
   cat > /etc/bdrman/telegram.conf << EOF
 BOT_TOKEN="$bot_token"
 CHAT_ID="$chat_id"
+PIN_CODE="1234"
+SERVER_NAME="$(hostname)"
 EOF
   
   # Secure permissions (only root can read)
@@ -2681,12 +2768,14 @@ fi
 source /etc/bdrman/telegram.conf
 
 MESSAGE="$1"
-HOSTNAME=$(hostname)
+# Use SERVER_NAME from config if available, else hostname
+SERVER_LABEL="${SERVER_NAME:-$(hostname)}"
 
 # Use safe curl with timeout and retries
+# Removed emoji to prevent encoding issues (???)
 curl --fail --max-time 10 --retry 2 -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
   -d chat_id="${CHAT_ID}" \
-  -d text="🖥️ *${HOSTNAME}*%0A%0A${MESSAGE}" \
+  -d text="[${SERVER_LABEL}]%0A%0A${MESSAGE}" \
   -d parse_mode="Markdown" > /dev/null
 
 if [ $? -ne 0 ]; then
@@ -2718,6 +2807,7 @@ EOF
   echo "Usage: bdrman-telegram \"Your message\""
   log_success "Telegram bot configured"
 }
+
 
 telegram_create_weekly_report(){
   cat > /etc/bdrman/telegram_weekly_report.sh << 'EOFSCRIPT'
@@ -2939,6 +3029,15 @@ import shlex
 import socket
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+
+import logging
+
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Load config
 config = {}
@@ -3295,24 +3394,54 @@ telegram_test_report(){
 }
 
 # ============= MENUS =============
+vpn_install_wireguard(){
+  echo "=== INSTALL WIREGUARD ==="
+  
+  if command_exists wg; then
+    echo "✅ WireGuard is already installed."
+    read -rp "Reinstall? (y/n): " ans
+    if [[ ! "$ans" =~ [Yy] ]]; then
+      return
+    fi
+  fi
+  
+  echo "Installing WireGuard and dependencies..."
+  apt update
+  apt install -y wireguard resolvconf qrencode
+  
+  echo "✅ Installation complete."
+  log_success "WireGuard installed"
+}
+
 vpn_menu(){
   while true; do
     clear_and_banner
     echo "=== VPN SETTINGS ==="
+    
+    # Check installation status
+    if command_exists wg; then
+      echo "🟢 Status: INSTALLED"
+    else
+      echo "🔴 Status: NOT INSTALLED"
+    fi
+    echo ""
+    
     echo "0) Back"
-    echo "1) WireGuard Status"
-    echo "2) Add New Client (wireguard-install.sh)"
-    echo "3) Restart WireGuard"
-    echo "4) List Config Files (/etc/wireguard)"
-    echo "5) Show wg show"
-    read -rp "Select (0-5): " c
+    echo "1) Install WireGuard (Auto)"
+    echo "2) WireGuard Status"
+    echo "3) Add New Client (wireguard-install.sh)"
+    echo "4) Restart WireGuard"
+    echo "5) List Config Files (/etc/wireguard)"
+    echo "6) Show wg show"
+    read -rp "Select (0-6): " c
     case "$c" in
       0) break ;;
-      1) vpn_status; pause ;;
-      2) vpn_add_client; pause ;;
-      3) vpn_restart; pause ;;
-      4) ls -la /etc/wireguard 2>/dev/null || echo "Directory not found."; pause ;;
-      5) wg show || echo "WireGuard not installed."; pause ;;
+      1) vpn_install_wireguard; pause ;;
+      2) vpn_status; pause ;;
+      3) vpn_add_client; pause ;;
+      4) vpn_restart; pause ;;
+      5) ls -la /etc/wireguard 2>/dev/null || echo "Directory not found."; pause ;;
+      6) wg show || echo "WireGuard not installed."; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
@@ -3483,7 +3612,8 @@ advanced_menu(){
     echo "4) System Snapshot & Restore"
     echo "5) Configuration as Code"
     echo "6) Advanced Firewall"
-    read -rp "Select (0-6): " c
+    echo "7) 🔧 Fix Permissions (Self-Repair)"
+    read -rp "Select (0-7): " c
     case "$c" in
       0) break ;;
       1) nginx_manage; pause ;;
@@ -3492,6 +3622,7 @@ advanced_menu(){
       4) snapshot_menu; pause ;;
       5) config_menu; pause ;;
       6) firewall_advanced; pause ;;
+      7) system_fix_permissions; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done

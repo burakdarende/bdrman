@@ -2,21 +2,34 @@
 
 BDRman, tek bir dosya (`bdrman.sh`) olarak çalışacak şekilde tasarlanmıştır.
 
-## 1. Hızlı Kurulum
+## 1. Dosyayı Sunucuya Yükleme
 
-Sadece `bdrman.sh` dosyasını sunucunuza atmanız yeterlidir.
+Repo **Private (Gizli)** olduğu için doğrudan `wget` ile çekemezsiniz. Aşağıdaki yöntemlerden birini kullanın:
+
+### Yöntem A: Token ile İndirme (Önerilen)
+GitHub'dan bir "Personal Access Token" (Classic) oluşturun ve aşağıdaki komutu kullanın:
+```bash
+# TOKEN kısmına kendi tokenınızı yazın
+curl -H "Authorization: token GITHUB_TOKEN_BURAYA" -L https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh -o bdrman.sh
+```
+
+### Yöntem B: Manuel Oluşturma
+1. Bilgisayarınızdaki `bdrman.sh` içeriğini kopyalayın.
+2. Sunucuda boş bir dosya açın: `nano bdrman.sh`
+3. İçeriği yapıştırın ve kaydedin (Ctrl+O, Enter, Ctrl+X).
+
+## 2. Otomatik Kurulum Komutu
+
+Dosyayı indirdikten sonra, aşağıdaki komut bloğunu kopyalayıp yapıştırın. Bu komut dosyayı yerine taşıyacak, ismini düzeltecek, izinleri verecek ve çalıştıracaktır:
 
 ```bash
-# 1. Dosyayı indirin (veya kopyalayın)
-wget https://raw.githubusercontent.com/burakdarende/bdrman/main/bdrman.sh
-
-# 2. Çalıştırma izni verin ve sistem yoluna taşıyın
-sudo mv bdrman.sh /usr/local/bin/bdrman
-sudo chmod +x /usr/local/bin/bdrman
-
-# 3. Çalıştırın!
+# Kurulumu başlat
+sudo mv bdrman.sh /usr/local/bin/bdrman && \
+sudo chmod +x /usr/local/bin/bdrman && \
 sudo bdrman
 ```
+
+Artık terminalde sadece `bdrman` yazarak programa erişebilirsiniz.
 
 ## 2. Opsiyonel Dosyalar
 
