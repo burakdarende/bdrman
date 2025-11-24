@@ -4666,77 +4666,16 @@ config_menu(){
   done
 }
 
-telegram_menu(){
-  while true; do
-    clear_and_banner
-    echo "=== TELEGRAM BOT ==="
-    echo ""
-    
-    # Check bot status
-    if systemctl is-active --quiet bdrman-telegram 2>/dev/null; then
-      echo "🟢 Bot Status: RUNNING"
-    else
-      echo "🔴 Bot Status: STOPPED"
-    fi
-    
-    if [ -f /etc/bdrman/telegram.conf ]; then
-      echo "✅ Configuration: Found"
-    else
-      echo "⚠️  Configuration: Not found"
-    fi
-    
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "0) Back"
-    echo "1) Initial Setup (Bot Token & Chat ID)"
-    echo "2) Start Interactive Bot Server (Commands)"
-    echo "3) Send Manual Message"
-    echo "4) Send Test Weekly Report"
-    echo "5) View Bot Logs"
-    echo "6) Stop Bot Server"
-    echo "7) Restart Bot Server"
-    echo "8) Check Bot Status (Detailed)"
-    read -rp "Select (0-8): " c
-    case "$c" in
-      0) break ;;
-      1) telegram_setup; pause ;;
-      2) telegram_bot_webhook; pause ;;
-      3) telegram_send; pause ;;
-      4) telegram_test_report; pause ;;
-      5) 
-        if systemctl is-active --quiet bdrman-telegram; then
-          echo "Last 50 lines of bot logs:"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          journalctl -u bdrman-telegram -n 50 --no-pager
-        else
-          echo "⚠️  Bot server not running"
-        fi
-        pause 
-        ;;
-      6)
-        systemctl stop bdrman-telegram
-        echo "✅ Bot server stopped"
-        pause
-        ;;
-      7)
-        systemctl restart bdrman-telegram
-        sleep 2
-        if systemctl is-active --quiet bdrman-telegram; then
-          echo "✅ Bot server restarted successfully"
-        else
-          echo "❌ Failed to restart. Check logs with option 5"
-        fi
-        pause
-        ;;
-      8)
-        telegram_bot_status
-        pause
-        ;;
-      *) echo "Invalid choice."; pause ;;
-    esac
-  done
-}
+# ============= TELEGRAM BOT =============
+# Telegram functions are now in lib/telegram.sh
+if [ -f "lib/telegram.sh" ]; then
+  source "lib/telegram.sh"
+elif [ -f "/opt/bdrman/lib/telegram.sh" ]; then
+  source "/opt/bdrman/lib/telegram.sh"
+else
+  # Fallback if lib not found (should not happen if installed correctly)
+  echo "⚠️  Warning: lib/telegram.sh not found."
+fi
 
 telegram_bot_status(){
   echo "=== DETAILED BOT STATUS ==="
@@ -4861,8 +4800,9 @@ system_update(){
     
     if [ $? -eq 0 ]; then
       echo "🔄 Restarting Web Dashboard..."
-      web_dashboard_stop
-      web_dashboard_start
+      # web_dashboard_stop # Web dashboard removed
+      # web_dashboard_start # Web dashboard removed
+      systemctl restart bdrman-telegram
       success "Update complete! Please restart bdrman to see changes."
       exit 0
     else
@@ -4875,23 +4815,37 @@ system_update(){
 }
 
 uninstall_bdrman(){
-  echo "=== UNINSTALL BDRMAN ==="
-  echo "⚠️  DANGER: This will REMOVE BDRman, Web Dashboard, Configs, and Logs."
+  echo "=== DEEP CLEAN UNINSTALL ==="
+  echo "⚠️  DANGER: This will PERMANENTLY REMOVE BDRman and ALL associated data."
+  echo "    - Binaries: /usr/local/bin/bdrman*"
+  echo "    - Configs:  /etc/bdrman"
+  echo "    - Data:     /opt/bdrman (venv, libs)"
+  echo "    - Logs:     /var/log/bdrman*"
+  echo "    - Services: bdrman-telegram.service"
+  echo "    - Cron:     Weekly reports"
+  echo ""
   echo "    Backups in $BACKUP_DIR will be PRESERVED unless you choose to delete them."
-  read -rp "Are you SURE you want to uninstall? (type 'uninstall' to confirm): " ans
+  
+  read -rp "Are you SURE? Type 'uninstall' to confirm: " ans
   if [ "$ans" != "uninstall" ]; then echo "Cancelled."; pause; return; fi
 
   echo "🛑 Stopping services..."
-  web_dashboard_stop
   systemctl stop bdrman-telegram 2>/dev/null
   systemctl disable bdrman-telegram 2>/dev/null
   rm -f /etc/systemd/system/bdrman-telegram.service
+  systemctl daemon-reload
   
-  echo "🗑️  Removing files..."
+  echo "🗑️  Removing binaries..."
   rm -f /usr/local/bin/bdrman
+  rm -f /usr/local/bin/bdrman-telegram
+  
+  echo "🗑️  Removing data and configs..."
   rm -rf /opt/bdrman
   rm -rf /etc/bdrman
-  rm -f /var/log/bdrman.log
+  rm -f /var/log/bdrman*
+  
+  echo "🗑️  Cleaning cron jobs..."
+  crontab -l 2>/dev/null | grep -v "telegram_weekly_report.sh" | crontab -
   
   read -rp "❓ Do you want to delete all backups in $BACKUP_DIR? (y/n): " del_backups
   if [[ "$del_backups" =~ ^[Yy]$ ]]; then
@@ -4901,9 +4855,57 @@ uninstall_bdrman(){
     echo "✅ Backups preserved at $BACKUP_DIR"
   fi
   
-  systemctl daemon-reload
-  echo "✅ BDRman has been uninstalled. Goodbye!"
+  echo "✅ BDRman has been completely removed. Goodbye!"
   exit 0
+}
+
+# ============= SECURITY & NETWORK =============
+
+panic_mode_on(){
+  local trusted_ip="$1"
+  if [ -z "$trusted_ip" ]; then
+    read -rp "Enter Trusted IP for SSH access: " trusted_ip
+  fi
+  
+  if [ -z "$trusted_ip" ]; then error "Trusted IP required!"; return; fi
+  
+  echo "🚨 ACTIVATING PANIC MODE 🚨"
+  echo "⚠️  Blocking ALL incoming traffic except SSH from $trusted_ip"
+  
+  ufw --force reset
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow from "$trusted_ip" to any port 22 proto tcp
+  ufw --force enable
+  
+  success "PANIC MODE ACTIVATED. Only $trusted_ip can access SSH."
+}
+
+panic_mode_off(){
+  echo "🟢 DEACTIVATING PANIC MODE..."
+  echo "Restoring default firewall rules..."
+  
+  ufw --force reset
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow ssh
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+  ufw allow 3000/tcp # CapRover
+  ufw --force enable
+  
+  success "Panic Mode Deactivated. Default rules restored."
+}
+
+network_stats(){
+  echo "=== NETWORK STATISTICS ==="
+  echo "Active Connections: $(netstat -an | grep ESTABLISHED | wc -l)"
+  echo ""
+  echo "Top 10 Connecting IPs:"
+  echo "----------------------"
+  netstat -ntu | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -nr | head -n 10
+  echo ""
+  pause
 }
 
 # ============= SYSTEM STATUS =============

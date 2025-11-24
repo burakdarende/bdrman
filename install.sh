@@ -92,20 +92,31 @@ else
   fi
 fi
 
-# Download web dashboard
-echo "⬇️  Installing web_dashboard.py..."
-mkdir -p "$WEB_DEST"
-
-if [ -f "web_dashboard.py" ]; then
-  echo "📂 Found local web_dashboard.py, using it..."
-  cp "web_dashboard.py" "$WEB_DEST/web_dashboard.py"
-  echo "✅ web_dashboard.py installed from local source"
+# Download telegram_bot.py
+echo "⬇️  Installing telegram_bot.py..."
+if [ -f "telegram_bot.py" ]; then
+  echo "📂 Found local telegram_bot.py, using it..."
+  cp "telegram_bot.py" "$DEST_DIR/telegram_bot.py"
+  echo "✅ telegram_bot.py installed from local source"
 else
-  # Always overwrite web_dashboard.py to get the latest version
-  if curl -s -f -L "$REPO_URL/web_dashboard.py" -o "$WEB_DEST/web_dashboard.py"; then
-    echo "✅ web_dashboard.py updated"
+  if curl -s -f -L "$REPO_URL/telegram_bot.py" -o "$DEST_DIR/telegram_bot.py"; then
+    echo "✅ telegram_bot.py downloaded"
   else
-    echo "⚠️  Web dashboard download failed (optional)"
+    echo "⚠️  Telegram bot download failed"
+  fi
+fi
+
+# Install lib modules
+echo "⬇️  Installing libraries..."
+mkdir -p "$DEST_DIR/lib"
+if [ -d "lib" ]; then
+  cp -r lib/* "$DEST_DIR/lib/"
+  echo "✅ Libraries installed from local source"
+else
+  # If remote install, we would need to download lib files individually or as tarball
+  # For now assuming single file or local install
+  if curl -s -f -L "$REPO_URL/lib/telegram.sh" -o "$DEST_DIR/lib/telegram.sh"; then
+    echo "✅ lib/telegram.sh downloaded"
   fi
 fi
 
@@ -115,9 +126,9 @@ echo "🔧 Setting permissions..."
 chmod +x "$DEST_DIR/bdrman"
 chown root:root "$DEST_DIR/bdrman"
 
-if [ -f "$WEB_DEST/web_dashboard.py" ]; then
-  chmod +x "$WEB_DEST/web_dashboard.py"
-  chown root:root "$WEB_DEST/web_dashboard.py"
+if [ -f "$DEST_DIR/telegram_bot.py" ]; then
+  chmod +x "$DEST_DIR/telegram_bot.py"
+  chown root:root "$DEST_DIR/telegram_bot.py"
 fi
 
 # Create required directories
@@ -132,37 +143,66 @@ chmod 700 /var/backups/bdrman
 touch /var/log/bdrman.log
 chmod 640 /var/log/bdrman.log
 
-# Setup web dashboard (if downloaded)
-if [ -f "$WEB_DEST/web_dashboard.py" ]; then
-  echo ""
-  echo "🌐 Setting up web dashboard..."
-  
-  # Create virtual environment
-  python3 -m venv "$WEB_DEST/venv"
-  
-  if [ $? -eq 0 ]; then
-    echo "✅ Virtual environment created"
-    
-    # Install Flask
-    echo "📦 Installing Flask..."
-    "$WEB_DEST/venv/bin/pip" install --quiet --upgrade pip
-    "$WEB_DEST/venv/bin/pip" install --quiet flask
-    
-    if [ $? -eq 0 ]; then
-      # Verify Flask
-      if "$WEB_DEST/venv/bin/python3" -c "import flask" 2>/dev/null; then
-        echo "✅ Flask installed and verified"
-      else
-        echo "⚠️  Flask verification failed"
-      fi
-    else
-      echo "⚠️  Flask installation failed"
-    fi
-  else
-    echo "⚠️  Virtual environment creation failed"
+# Setup Python Environment for Telegram Bot
+echo ""
+echo "🐍 Setting up Python environment for Telegram Bot..."
+
+# Install Python3 and venv if missing
+if ! command -v python3 &> /dev/null; then
+  echo "Installing Python3..."
+  if [ -f /etc/debian_version ]; then
+    apt-get update && apt-get install -y python3 python3-pip python3-venv
+  elif [ -f /etc/redhat-release ]; then
+    yum install -y python3 python3-pip
   fi
 fi
 
+# Create virtual environment
+VENV_DIR="/opt/bdrman/venv"
+mkdir -p "/opt/bdrman"
+python3 -m venv "$VENV_DIR"
+
+if [ $? -eq 0 ]; then
+  echo "✅ Virtual environment created at $VENV_DIR"
+  
+  # Install Dependencies
+  echo "📦 Installing Python dependencies..."
+  "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+  "$VENV_DIR/bin/pip" install --quiet python-telegram-bot psutil requests
+  
+  if [ $? -eq 0 ]; then
+    echo "✅ Dependencies installed (python-telegram-bot, psutil)"
+  else
+    echo "❌ Failed to install Python dependencies"
+  fi
+else
+  echo "❌ Failed to create virtual environment"
+fi
+
+# Create Systemd Service for Telegram Bot
+echo ""
+echo "⚙️  Creating systemd service..."
+cat > /etc/systemd/system/bdrman-telegram.service <<EOF
+[Unit]
+Description=BDRman Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/bdrman
+Environment="PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=$VENV_DIR/bin/python3 /usr/local/bin/telegram_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+echo "✅ Service created: bdrman-telegram.service"
+    
 # Installation complete
 echo ""
 echo "========================================="
@@ -171,7 +211,7 @@ echo "========================================="
 echo ""
 echo "📝 Installed components:"
 echo "   • Main script:     $DEST_DIR/bdrman"
-echo "   • Web dashboard:   $WEB_DEST/web_dashboard.py"
+echo "   • Telegram Bot:    $DEST_DIR/telegram_bot.py"
 echo "   • Config dir:      /etc/bdrman"
 echo "   • Backup dir:      /var/backups/bdrman"
 echo "   • Log file:        /var/log/bdrman.log"
@@ -179,11 +219,11 @@ echo ""
 echo "🚀 Quick start:"
 echo "   bdrman              # Interactive menu"
 echo "   bdrman status       # System status"
-echo "   bdrman web start    # Start web dashboard"
+echo "   bdrman telegram     # Manage Telegram Bot"
 echo "   bdrman --help       # Show all commands"
 echo ""
-echo "🌐 Web dashboard will be available at:"
-echo "   http://$(hostname -I | awk '{print $1}'):8443"
+echo "🤖 To activate the bot:"
+echo "   Run 'bdrman telegram setup' to enter your Token and Chat ID."
 echo ""
 echo "📖 For more info: https://github.com/burakdarende/bdrman"
 echo ""
