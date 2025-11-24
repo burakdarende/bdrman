@@ -558,18 +558,25 @@ systemctl stop bdrman-telegram
 curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh -o bdrman_update.sh
 
 # Run update (auto-confirm)
-echo "yes" | bash bdrman_update.sh > /dev/null 2>&1
+echo "yes" | bash bdrman_update.sh > /tmp/bdrman_update.log 2>&1
 
 # Force restart bot service
 systemctl daemon-reload
 systemctl restart bdrman-telegram
 
-# Wait for bot to be fully ready (max 15 seconds)
-for i in {{1..15}}; do
+# Wait for bot to be fully ready (max 30 seconds)
+echo "Waiting for bot to start..."
+for i in {{1..30}}; do
   if systemctl is-active --quiet bdrman-telegram; then
-    # Give bot time to fully initialize
-    sleep 2
-    break
+    # Bot service is active, wait a bit more for initialization
+    sleep 3
+    echo "Bot is active, checking if responsive..."
+    
+    # Check if bot process is actually running
+    if pgrep -f "python.*telegram_bot.py" > /dev/null; then
+      echo "Bot process found, ready to send notification"
+      break
+    fi
   fi
   sleep 1
 done
@@ -584,13 +591,25 @@ HOSTNAME=$(hostname)
 
 MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: $NEW_VERSION%0A💻 Server: $HOSTNAME%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0ABot is ready! Send /start"
 
-curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \\
-  -d "chat_id=$CHAT_ID" \\
-  -d "text=$MESSAGE" \\
-  -d "parse_mode=Markdown" > /dev/null 2>&1
+# Try sending notification 3 times
+for attempt in {{1..3}}; do
+  echo "Sending notification (attempt $attempt)..."
+  RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \\
+    -d "chat_id=$CHAT_ID" \\
+    -d "text=$MESSAGE" \\
+    -d "parse_mode=Markdown")
+  
+  if echo "$RESPONSE" | grep -q '"ok":true'; then
+    echo "Notification sent successfully!"
+    break
+  else
+    echo "Failed to send notification, retrying..."
+    sleep 2
+  fi
+done
 
 # Cleanup
-rm -f /tmp/bdrman_update.sh /tmp/bdrman_updater.sh
+rm -f /tmp/bdrman_update.sh /tmp/bdrman_updater.sh /tmp/bdrman_update.log
 """
     
     # Write and execute update script
