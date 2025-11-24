@@ -542,7 +542,15 @@ settings_menu(){
     read -rp "Select (0-4): " c
     case "$c" in
       0) break ;;
-      1) system_update; pause ;; 
+      1)
+        system_update
+        if [ $? -eq 0 ]; then
+          echo "🔄 Reloading BDRman..."
+          sleep 2
+          exec "$0" "$@"
+        fi
+        pause
+        ;; 
       2) uninstall_bdrman; pause ;;
       3)
         read -rp "New Hostname: " h
