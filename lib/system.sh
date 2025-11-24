@@ -150,6 +150,14 @@ system_update(){
   echo "📌 Current version: ${VERSION}"
   echo ""
   
+  # Restart Telegram bot if it's running (to load new code)
+  if systemctl is-active --quiet bdrman-telegram 2>/dev/null; then
+    echo "🔄 Restarting Telegram bot..."
+    systemctl restart bdrman-telegram
+    sleep 2  # Wait for bot to initialize
+    echo "   ✅ Bot restarted"
+  fi
+  
   # Send Telegram notification if configured
   if [ -f /etc/bdrman/telegram.conf ]; then
     source /etc/bdrman/telegram.conf 2>/dev/null
