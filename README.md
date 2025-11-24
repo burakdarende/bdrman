@@ -55,22 +55,16 @@ bdrman update                    # BDRman'i güncelle
 - **Güvenlik Taraması:** Port ve zayıf şifre kontrolü (manuel)
   - Çalıştırma: Menüden veya `security_scan` fonksiyonu
 
-### Web Dashboard (v4.0)
-- **Flask Tabanlı:** Hafif web arayüzü
-- **Port:** 8443 (varsayılan)
-- **Özellikler:**
-  - Gerçek zamanlı sistem metrikleri
-  - Docker container yönetimi
-  - Log görüntüleme
-  - Otomatik yenileme (5 saniye)
-- **Başlatma:**
-  ```bash
-  # Python ve Flask gerekli
-  apt install python3 python3-pip
-  pip3 install flask
-  python3 /path/to/web_dashboard.py
-  ```
-- **Erişim:** `http://sunucu-ip:8443`
+### Modüler Mimari (v4.0)
+- **Hafif ve Hızlı:** Web arayüzü tamamen kaldırılarak sistem kaynakları optimize edildi.
+- **CLI Odaklı:** Tüm işlemler terminal üzerinden hızlıca yapılabilir.
+- **Telegram Entegrasyonu:** Sunucu yönetimi artık cebinizde.
+
+### Telegram Bot (Gelişmiş)
+- **İzleme:** Sistem durumu, Docker, Servisler
+- **Yönetim:** VPN, Yedekleme, Güncelleme
+- **Güvenlik:** Panic Mode, Firewall, IP Bloklama
+- **Acil Durum:** PIN korumalı kritik işlemler
 
 ## 📦 Kurulum
 
