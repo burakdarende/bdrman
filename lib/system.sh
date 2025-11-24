@@ -155,13 +155,14 @@ system_update(){
     source /etc/bdrman/telegram.conf 2>/dev/null
     if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
       HOSTNAME=$(hostname)
-      CURRENT_VERSION="${VERSION}"
-      MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: ${CURRENT_VERSION}%0A💻 Server: ${HOSTNAME}%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0AAll systems ready!"
+      # Read NEW version from updated bdrman script (not old VERSION variable!)
+      NEW_VERSION=$(grep 'VERSION=' /usr/local/bin/bdrman | head -1 | cut -d'=' -f2 | tr -d '"')
+      MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: ${NEW_VERSION}%0A💻 Server: ${HOSTNAME}%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0AAll systems ready!"
       curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
         -d "chat_id=${CHAT_ID}" \
         -d "text=${MESSAGE}" \
         -d "parse_mode=Markdown" > /dev/null 2>&1
-      echo "📱 Telegram notification sent"
+      echo "📱 Telegram notification sent (Version: ${NEW_VERSION})"
       echo ""
     fi
   fi
