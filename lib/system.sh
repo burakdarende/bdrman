@@ -4,6 +4,7 @@ system_status(){
   clear_and_banner
   echo "=== SYSTEM STATUS ==="
   echo "--------------------------------"
+  echo "Version: ${VERSION}"
   echo "Hostname: $(hostname)"
   echo "OS: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
   echo "Kernel: $(uname -r)"
@@ -14,6 +15,21 @@ system_status(){
   echo "Disk Usage: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
   echo "--------------------------------"
   pause
+}
+
+show_version(){
+  clear_and_banner
+  echo "=== VERSION INFORMATION ==="
+  echo ""
+  echo "🤖 BDRman Version: ${VERSION}"
+  echo "🐧 OS: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+  echo "⚙️  Kernel: $(uname -r)"
+  echo "💻 Hostname: $(hostname)"
+  echo ""
+  echo "📂 Installation Path: /usr/local/bin/bdrman"
+  echo "📋 Config Path: /etc/bdrman"
+  echo "📊 Logs: /var/log/bdrman*.log"
+  echo ""
 }
 
 system_update(){
@@ -122,15 +138,33 @@ system_update(){
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   echo "📝 What was updated:"
-  echo "   • Main script: /usr/local/bin/bdrman"
-  echo "   • Libraries: /usr/local/lib/bdrman/"
-  echo "   • Telegram bot: /etc/bdrman/telegram_bot.py"
+  echo "   • BDRman core scripts"
+  echo "   • All library modules"
+  echo "   • Telegram bot (if installed)"
   echo ""
-  echo "🔒 What was preserved:"
-  echo "   • Your Telegram token & chat ID"
+  echo "🎯 Your settings were preserved:"
+  echo "   • Telegram configuration"
   echo "   • All backups"
-  echo "   • System logs"
+  echo "   • Custom configurations"
   echo ""
+  echo "📌 Current version: ${VERSION}"
+  echo ""
+  
+  # Send Telegram notification if configured
+  if [ -f /etc/bdrman/telegram.conf ]; then
+    source /etc/bdrman/telegram.conf 2>/dev/null
+    if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+      HOSTNAME=$(hostname)
+      CURRENT_VERSION="${VERSION}"
+      MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: ${CURRENT_VERSION}%0A💻 Server: ${HOSTNAME}%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0AAll systems ready!"
+      curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${CHAT_ID}" \
+        -d "text=${MESSAGE}" \
+        -d "parse_mode=Markdown" > /dev/null 2>&1
+      echo "📱 Telegram notification sent"
+      echo ""
+    fi
+  fi
   echo "💡 Next steps:"
   echo "   • Test Telegram bot: Send /help to your bot"
   echo "   • Check status: systemctl status bdrman-telegram"

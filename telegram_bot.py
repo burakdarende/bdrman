@@ -15,7 +15,19 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Conve
 # Configuration
 CONFIG_FILE = "/etc/bdrman/telegram.conf"
 LOG_FILE = "/var/log/bdrman-bot.log"
-VERSION = "4.8.2"
+
+# Read version from bdrman script
+def get_version():
+    try:
+        with open('/usr/local/bin/bdrman', 'r') as f:
+            for line in f:
+                if line.startswith('VERSION='):
+                    return line.split('=')[1].strip().strip('"')
+    except:
+        pass
+    return "4.8.3"  # Fallback if bdrman script not found
+
+VERSION = get_version()
 
 # Logging
 logging.basicConfig(
