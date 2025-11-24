@@ -25,7 +25,7 @@ def get_version():
                     return line.split('=')[1].strip().strip('"')
     except:
         pass
-    return "4.8.3"  # Fallback if bdrman script not found
+    return "4.8.5"  # Fallback if bdrman script not found
 
 VERSION = get_version()
 
@@ -347,9 +347,89 @@ async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def updatebdr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
-    await update.message.reply_text("🔄 Updating BDRman...")
-    subprocess.Popen(["/usr/local/bin/bdrman", "update"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    await update.message.reply_text("✅ Update started\n⚠️ Bot will restart\nSend /start in 30s")
+    
+    # Check if user confirmed
+    if not context.args or context.args[0] != 'confirm':
+        current_version = VERSION
+        msg = (
+            f"🔄 *BDRman Update*\n\n"
+            f"📌 Current: `v{current_version}`\n"
+            f"📥 Will update to latest from GitHub\n\n"
+            f"✅ *Preserved:*\n"
+            f"  • Telegram config\n"
+            f"  • All backups\n"
+            f"  • Custom settings\n\n"
+            f"⚠️ *Bot will restart*\n\n"
+            f"To confirm, send:\n"
+            f"`/updatebdr confirm`"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        return
+    
+    # User confirmed, proceed with update
+    await update.message.reply_text(
+        "🔄 *Starting Update...*\n\n"
+        "This will take 5-15 seconds.\n"
+        "I'll notify you when ready!",
+        parse_mode='Markdown'
+    )
+    
+    # Create update script that will notify after completion
+    update_script = f"""#!/bin/bash
+# BDRman Update Script
+cd /tmp
+
+# Download latest installer
+curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh -o bdrman_update.sh
+
+# Run update (auto-confirm)
+echo "yes" | bash bdrman_update.sh > /dev/null 2>&1
+
+# Wait for bot service to restart (max 10 seconds)
+for i in {{1..10}}; do
+  if systemctl is-active --quiet bdrman-telegram; then
+    sleep 1
+    break
+  fi
+  sleep 1
+done
+
+# Get new version
+NEW_VERSION=$(grep 'VERSION=' /usr/local/bin/bdrman | head -1 | cut -d'=' -f2 | tr -d '"')
+
+# Send success notification
+BOT_TOKEN=$(grep BOT_TOKEN /etc/bdrman/telegram.conf | cut -d'=' -f2 | tr -d '"')
+CHAT_ID=$(grep CHAT_ID /etc/bdrman/telegram.conf | cut -d'=' -f2 | tr -d '"')
+HOSTNAME=$(hostname)
+
+MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: $NEW_VERSION%0A💻 Server: $HOSTNAME%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0ABot is ready! Send /start"
+
+curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \\
+  -d "chat_id=$CHAT_ID" \\
+  -d "text=$MESSAGE" \\
+  -d "parse_mode=Markdown" > /dev/null 2>&1
+
+# Cleanup
+rm -f /tmp/bdrman_update.sh /tmp/bdrman_updater.sh
+"""
+    
+    # Write and execute update script
+    with open('/tmp/bdrman_updater.sh', 'w') as f:
+        f.write(update_script)
+    
+    run_cmd("chmod +x /tmp/bdrman_updater.sh")
+    
+    # Run in background
+    subprocess.Popen(["/bin/bash", "/tmp/bdrman_updater.sh"], 
+                     stdout=subprocess.DEVNULL, 
+                     stderr=subprocess.DEVNULL)
+    
+    await update.message.reply_text(
+        "⏳ *Update in progress...*\n\n"
+        "I'll send you a message when ready!\n"
+        "(Usually takes 5-15 seconds)",
+        parse_mode='Markdown'
+    )
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
