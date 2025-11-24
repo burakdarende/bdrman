@@ -234,7 +234,7 @@ clear_and_banner(){
     echo -e "${BLUE}${line}${RESET}"
   done
 
-  subtitle="BDR - SERVER MANAGEMENT PANEL"
+  subtitle="BDR - SERVER MANAGEMENT PANEL - v${VERSION:-4.8.1}"
   padding=$(( (COLS - ${#subtitle}) / 2 ))
   printf "%*s" "$padding" ""
   echo -e "${YELLOW}${subtitle}${RESET}"
