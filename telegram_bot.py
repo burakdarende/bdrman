@@ -122,36 +122,50 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
-    await update.message.reply_text("📊 Collecting data...")
     
-    cpu = psutil.cpu_percent(interval=1)
-    mem = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    uptime = run_cmd("uptime -p")
-    load = os.getloadavg()
-    
-    # Colored logs
-    logs_raw = run_cmd("journalctl -n 10 --no-pager -o short")
-    logs_lines = logs_raw.split('\n')[:10]
-    logs_colored = '\n'.join([colorize_log_line(line) for line in logs_lines])
-    
-    if len(logs_colored) > 1500:
-        logs_colored = logs_colored[-1500:]
-    
-    msg = (
-        f"📊 *System Status - {SERVER_NAME}*\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"⏱️ *Uptime:* `{uptime}`\n"
-        f"📈 *Load:* `{load[0]:.2f}, {load[1]:.2f}, {load[2]:.2f}`\n\n"
-        f"🖥️ *CPU:* {cpu}% {get_bar(cpu)}\n"
-        f"🧠 *RAM:* {mem.percent}% {get_bar(mem.percent)}\n"
-        f"   `{mem.used//1024//1024//1024}GB / {mem.total//1024//1024//1024}GB`\n"
-        f"💾 *Disk:* {disk.percent}% {get_bar(disk.percent)}\n"
-        f"   `{disk.free//1024//1024//1024}GB free`\n\n"
-        f"📜 *Recent Logs (Colored)*\n"
-        f"{logs_colored}"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    try:
+        await update.message.reply_text("📊 Collecting data...")
+        
+        # Get system info
+        cpu = psutil.cpu_percent(interval=1)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        uptime = run_cmd("uptime -p")
+        load = os.getloadavg()
+        
+        # Send system stats first
+        msg1 = (
+            f"📊 *System Status - {SERVER_NAME}*\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"⏱️ *Uptime:* `{uptime}`\n"
+            f"📈 *Load:* `{load[0]:.2f}, {load[1]:.2f}, {load[2]:.2f}`\n\n"
+            f"🖥️ *CPU:* {cpu}% {get_bar(cpu)}\n"
+            f"🧠 *RAM:* {mem.percent}% {get_bar(mem.percent)}\n"
+            f"   `{mem.used//1024//1024//1024}GB / {mem.total//1024//1024//1024}GB`\n"
+            f"💾 *Disk:* {disk.percent}% {get_bar(disk.percent)}\n"
+            f"   `{disk.free//1024//1024//1024}GB free`"
+        )
+        await update.message.reply_text(msg1, parse_mode='Markdown')
+        
+        # Get and send colored logs separately
+        logs_raw = run_cmd("journalctl -n 10 --no-pager -o short")
+        logs_lines = logs_raw.split('\n')[:10]
+        
+        msg2 = "📜 *Recent Logs (10 lines)*\n\n"
+        for line in logs_lines:
+            if line.strip():
+                colored = colorize_log_line(line[:100])  # Limit line length
+                msg2 += colored + "\n"
+        
+        # Send logs (might be long, so no markdown)
+        if len(msg2) > 4000:
+            msg2 = msg2[:4000] + "\n..."
+        
+        await update.message.reply_text(msg2)
+        
+    except Exception as e:
+        logger.error(f"Status error: {e}")
+        await update.message.reply_text(f"❌ Error getting status: {str(e)}")
 
 async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -261,7 +275,8 @@ async def network_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ports_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
-    ports = run_cmd("netstat -tuln | grep LISTEN")
+    # Use ss (modern replacement for netstat)
+    ports = run_cmd("ss -tuln | grep LISTEN || netstat -tuln | grep LISTEN 2>/dev/null || echo 'Install: apt install iproute2'")
     await update.message.reply_text(f"👂 *Listening Ports*\n```\n{ports}\n```", parse_mode='Markdown')
 
 async def ssl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,9 +329,94 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
-    await update.message.reply_text("🔄 Updating system...")
+    await update.message.reply_text("🔄 Updating system packages...")
     res = run_cmd("apt update && apt upgrade -y", timeout=300)
-    await update.message.reply_text("✅ Updated")
+    await update.message.reply_text("✅ System packages updated")
+
+async def updatebdr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    await update.message.reply_text("🔄 Updating BDRman...\nThis will preserve your settings.")
+    
+    # Run bdrman update via CLI
+    subprocess.Popen(
+        ["/usr/local/bin/bdrman", "--non-interactive", "update"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    
+    await update.message.reply_text(
+        "✅ BDRman update started in background\n\n"
+        "⚠️ Bot will restart automatically\n"
+        "Send /start in 30 seconds to verify"
+    )
+
+async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    try:
+        import json
+        from datetime import datetime
+        
+        await update.message.reply_text("📤 Exporting configuration...")
+        
+        # Collect configuration
+        config = {
+            "exported_at": datetime.now().isoformat(),
+            "server_name": SERVER_NAME,
+            "telegram": {
+                "chat_id": CHAT_ID,
+                "pin_code": PIN_CODE
+            },
+            "firewall": {
+                "status": run_cmd("ufw status | head -1"),
+                "rules": run_cmd("ufw status numbered | tail -n +5")
+            },
+            "services": {
+                "docker": run_cmd("systemctl is-active docker"),
+                "nginx": run_cmd("systemctl is-active nginx"),
+                "ssh": run_cmd("systemctl is-active ssh")
+            },
+            "network": {
+                "ip": run_cmd("hostname -I | awk '{print $1}'"),
+                "hostname": run_cmd("hostname")
+            },
+            "cron_jobs": run_cmd("crontab -l 2>/dev/null || echo 'No cron jobs'"),
+            "docker_containers": run_cmd("docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}'")
+        }
+        
+        # Create JSON file
+        json_data = json.dumps(config, indent=2)
+        config_file = f"/tmp/bdrman_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        with open(config_file, 'w') as f:
+            f.write(json_data)
+        
+        # Send file
+        await update.message.reply_document(
+            document=open(config_file, 'rb'),
+            filename=f"bdrman_config_{SERVER_NAME}.json",
+            caption="📋 BDRman Configuration Export\n⚠️ Keep this file secure!"
+        )
+        
+        # Cleanup
+        run_cmd(f"rm {config_file}")
+        
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+        await update.message.reply_text(f"❌ Export failed: {str(e)}")
+
+async def import_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    await update.message.reply_text(
+        "📥 *Config Import*\n\n"
+        "To import configuration:\n"
+        "1. Send me the JSON file\n"
+        "2. I'll show you what will be imported\n"
+        "3. Confirm to apply\n\n"
+        "⚠️ This feature is coming soon!\n"
+        "For now, use the exported JSON as a backup reference.",
+        parse_mode='Markdown'
+    )
 
 async def block_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -363,11 +463,58 @@ async def firewall_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def services_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
+    
+    # Get failed services
     failed = run_cmd("systemctl --failed --no-pager --no-legend")
-    if not failed or "0 loaded" in failed:
-        await update.message.reply_text("✅ All services OK")
+    failed_count = run_cmd("systemctl --failed --no-pager --no-legend | wc -l")
+    
+    # Get key running services
+    key_services = ["docker", "nginx", "ssh", "ufw", "cron"]
+    running = []
+    stopped = []
+    
+    for svc in key_services:
+        status = run_cmd(f"systemctl is-active {svc} 2>/dev/null || echo inactive")
+        if "active" in status:
+            running.append(svc)
+        else:
+            stopped.append(svc)
+    
+    msg = f"⚙️ *Services Status*\n\n"
+    msg += f"✅ *Running ({len(running)})*\n"
+    for svc in running:
+        msg += f"  • {svc}\n"
+    
+    if stopped:
+        msg += f"\n⚠️ *Stopped ({len(stopped)})*\n"
+        for svc in stopped:
+            msg += f"  • {svc}\n"
+    
+    if failed and "0 loaded" not in failed:
+        msg += f"\n❌ *Failed ({failed_count})*\n```\n{failed[:500]}\n```"
     else:
-        await update.message.reply_text(f"⚠️ *Failed*\n```\n{failed}\n```", parse_mode='Markdown')
+        msg += f"\n✅ No failed services"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def running_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    # Get all running services
+    running = run_cmd("systemctl list-units --type=service --state=running --no-pager --no-legend | awk '{print $1}'")
+    services = running.split('\n')[:20]  # Limit to 20
+    
+    msg = f"✅ *Running Services ({len(services)})*\n\n"
+    for svc in services:
+        if svc.strip():
+            svc_name = svc.replace('.service', '')
+            msg += f"• `{svc_name}`\n"
+    
+    total_services = len(running.split('\n'))
+    if total_services > 20:
+        msg += f"\n...and {total_services - 20} more"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def reboot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -511,8 +658,12 @@ def main():
     
     register_command("vpn", "Create VPN user", "🔧 Management")
     register_command("backup", "Create backup", "🔧 Management")
-    register_command("update", "System update", "🔧 Management")
-    register_command("services", "Failed services", "🔧 Management")
+    register_command("update", "Update system packages", "🔧 Management")
+    register_command("updatebdr", "Update BDRman itself", "🔧 Management")
+    register_command("export", "Export config as JSON", "🔧 Management")
+    register_command("import", "Import config (soon)", "🔧 Management")
+    register_command("services", "Service status overview", "🔧 Management")
+    register_command("running", "All running services", "🔧 Management")
     register_command("nginx", "Nginx status", "🔧 Management")
     register_command("kernel", "Kernel info", "🔧 Management")
     register_command("reboot", "Reboot server", "🔧 Management")
@@ -551,7 +702,11 @@ def main():
     app.add_handler(CommandHandler("vpn", vpn_cmd))
     app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("update", update_cmd))
+    app.add_handler(CommandHandler("updatebdr", updatebdr_cmd))
+    app.add_handler(CommandHandler("export", export_cmd))
+    app.add_handler(CommandHandler("import", import_cmd))
     app.add_handler(CommandHandler("services", services_cmd))
+    app.add_handler(CommandHandler("running", running_cmd))
     app.add_handler(CommandHandler("nginx", nginx_cmd))
     app.add_handler(CommandHandler("kernel", kernel_cmd))
     app.add_handler(CommandHandler("reboot", reboot_cmd))
