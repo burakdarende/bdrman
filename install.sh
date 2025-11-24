@@ -75,7 +75,7 @@ if [ -f "bdrman.sh" ]; then
   cp "bdrman.sh" "$DEST_DIR/bdrman"
 else
   echo "⬇️  Downloading bdrman.sh..."
-  curl -s -f -L "$REPO_URL/bdrman.sh" -o "$DEST_DIR/bdrman"
+  curl -s -f -L "$REPO_URL/bdrman.sh?v=$(date +%s)" -o "$DEST_DIR/bdrman"
 fi
 chmod +x "$DEST_DIR/bdrman"
 
@@ -89,7 +89,7 @@ else
   # List of libs to download
   LIBS=("core" "vpn" "caprover" "security" "backup" "system" "docker" "telegram")
   for lib in "${LIBS[@]}"; do
-    curl -s -f -L "$REPO_URL/lib/$lib.sh" -o "$LIB_DEST/$lib.sh"
+    curl -s -f -L "$REPO_URL/lib/$lib.sh?v=$(date +%s)" -o "$LIB_DEST/$lib.sh"
     echo "   - $lib.sh installed"
   done
 fi
@@ -102,7 +102,7 @@ systemctl stop bdrman-telegram 2>/dev/null || true
 if [ -f "telegram_bot.py" ]; then
   cp "telegram_bot.py" "$CONFIG_DIR/telegram_bot.py"
 else
-  curl -s -f -L "$REPO_URL/telegram_bot.py" -o "$CONFIG_DIR/telegram_bot.py"
+  curl -s -f -L "$REPO_URL/telegram_bot.py?v=$(date +%s)" -o "$CONFIG_DIR/telegram_bot.py"
 fi
 chmod +x "$CONFIG_DIR/telegram_bot.py"
 

@@ -71,7 +71,7 @@ system_update(){
   echo "⬇️  Step 2/4: Downloading latest version..."
   
   # Download latest installer
-  if ! curl -s -f -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh" -o "/tmp/bdrman_install_latest.sh"; then
+  if ! curl -s -f -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh?v=$(date +%s)" -o "/tmp/bdrman_install_latest.sh"; then
     echo "❌ Failed to download installer"
     echo "   Your system was not modified."
     rm -rf "$BACKUP_TEMP"
