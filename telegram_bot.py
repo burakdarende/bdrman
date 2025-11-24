@@ -16,16 +16,17 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Conve
 CONFIG_FILE = "/etc/bdrman/telegram.conf"
 LOG_FILE = "/var/log/bdrman-bot.log"
 
-# Read version from bdrman script
+# Read version from bdrman script - NO FALLBACK!
 def get_version():
     try:
         with open('/usr/local/bin/bdrman', 'r') as f:
             for line in f:
                 if line.startswith('VERSION='):
                     return line.split('=')[1].strip().strip('"')
-    except:
-        pass
-    return "4.8.7"  # Fallback if bdrman script not found
+    except Exception as e:
+        logger.error(f"Cannot read version from bdrman: {e}")
+    # If we can't read version, something is seriously wrong
+    return "UNKNOWN"
 
 VERSION = get_version()
 
@@ -381,24 +382,31 @@ async def caprestart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def capinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     
-    # Get CapRover version and info
-    version = run_cmd("docker exec captain-captain cat /usr/src/app/package.json 2>/dev/null | grep '\"version\"' | cut -d'\"' -f4")
+    # Get CapRover version
+    version = run_cmd("docker exec captain-captain cat /usr/src/app/package.json 2>/dev/null | grep '\"version\"' | head -1 | awk -F'\"' '{print $4}'")
     
     # Get resource usage
     captain_stats = run_cmd("docker stats captain-captain --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}'")
     
-    # Get domain
-    domain = run_cmd("docker exec captain-captain cat /captain/data/config-captain.json 2>/dev/null | grep 'customDomain' | cut -d'\"' -f4")
+    # Get domain from config
+    domain = run_cmd("docker exec captain-captain cat /captain/data/config-captain.json 2>/dev/null | grep -o '\"customDomain\":\"[^\"]*\"' | cut -d'\"' -f4")
     
     msg = "🚢 *CapRover Info*\n\n"
     
-    if version and version.strip():
-        msg += f"📌 Version: `{version.strip()}`\n"
+    # Version with checkmark
+    if version and version.strip() and version.strip() != "":
+        msg += f"📌 Version: ✅ `{version.strip()}`\n"
+    else:
+        msg += "📌 Version: ❌ Not found\n"
     
-    if domain and domain.strip():
-        msg += f"🌐 Domain: `{domain.strip()}`\n"
+    # Domain with checkmark
+    if domain and domain.strip() and domain.strip() != "":
+        msg += f"🌐 Domain: ✅ `{domain.strip()}`\n"
+    else:
+        msg += "🌐 Domain: ❌ Not configured\n"
     
-    if captain_stats:
+    # Resources
+    if captain_stats and "|" in captain_stats:
         parts = captain_stats.split('|')
         if len(parts) == 2:
             cpu, mem = parts
@@ -411,7 +419,6 @@ async def capinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"\n📦 Total Apps: `{app_count.strip()}`"
     
     await update.message.reply_text(msg, parse_mode='Markdown')
-
 
 async def network_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
