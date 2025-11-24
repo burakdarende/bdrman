@@ -17,28 +17,128 @@ system_status(){
 }
 
 system_update(){
-  echo "=== SYSTEM UPDATE ==="
-  echo "This will update BDRman to the latest version."
-  echo "Telegram Bot service will be restarted automatically."
-  read -rp "Continue? (y/n): " ans
-  if [[ ! "$ans" =~ ^[Yy]$ ]]; then return; fi
-
-  echo "⬇️  Downloading latest installer..."
-  if curl -s -f -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh" -o "/tmp/bdrman_install.sh"; then
-    bash "/tmp/bdrman_install.sh"
-    
-    if [ $? -eq 0 ]; then
-      echo "🔄 Restarting Telegram Bot..."
-      systemctl restart bdrman-telegram
-      success "Update complete! Please restart bdrman to see changes."
-      exit 0
-    else
-      error "Update failed during installation."
-    fi
-  else
-    error "Failed to download update script."
+  echo "=== BDRMAN UPDATE SYSTEM ==="
+  echo ""
+  echo "This will update BDRman to the latest version from GitHub."
+  echo "✅ Your settings will be preserved:"
+  echo "   - Telegram configuration (/etc/bdrman/telegram.conf)"
+  echo "   - All backups (/var/backups/bdrman)"
+  echo "   - System logs"
+  echo ""
+  
+  read -rp "Continue with update? (yes/no): " ans
+  if [ "$ans" != "yes" ]; then 
+    echo "Update cancelled."
+    return
   fi
-  pause
+  
+  echo ""
+  echo "📦 Step 1/4: Backing up current configuration..."
+  
+  # Create backup directory
+  BACKUP_TEMP="/tmp/bdrman_update_backup_$(date +%s)"
+  mkdir -p "$BACKUP_TEMP"
+  
+  # Backup configs
+  if [ -d /etc/bdrman ]; then
+    cp -r /etc/bdrman "$BACKUP_TEMP/" 2>/dev/null
+    echo "   ✅ Config backed up"
+  fi
+  
+  # Backup current version info
+  if [ -f /usr/local/bin/bdrman ]; then
+    cp /usr/local/bin/bdrman "$BACKUP_TEMP/bdrman.old" 2>/dev/null
+    echo "   ✅ Current version saved"
+  fi
+  
+  echo ""
+  echo "⬇️  Step 2/4: Downloading latest version..."
+  
+  # Download latest installer
+  if ! curl -s -f -L "https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh" -o "/tmp/bdrman_install_latest.sh"; then
+    echo "❌ Failed to download installer"
+    echo "   Your system was not modified."
+    rm -rf "$BACKUP_TEMP"
+    return 1
+  fi
+  
+  echo "   ✅ Downloaded successfully"
+  
+  echo ""
+  echo "🔧 Step 3/4: Installing update..."
+  
+  # Run installer
+  if bash "/tmp/bdrman_install_latest.sh"; then
+    echo "   ✅ Installation complete"
+  else
+    echo "❌ Installation failed"
+    echo "   Restoring backup..."
+    
+    # Restore from backup
+    if [ -d "$BACKUP_TEMP/bdrman" ]; then
+      cp -r "$BACKUP_TEMP/bdrman"/* /etc/bdrman/ 2>/dev/null
+    fi
+    
+    rm -rf "$BACKUP_TEMP"
+    return 1
+  fi
+  
+  echo ""
+  echo "🔄 Step 4/4: Restoring your settings..."
+  
+  # Restore telegram config (most important)
+  if [ -f "$BACKUP_TEMP/bdrman/telegram.conf" ]; then
+    cp "$BACKUP_TEMP/bdrman/telegram.conf" /etc/bdrman/telegram.conf
+    chmod 600 /etc/bdrman/telegram.conf
+    echo "   ✅ Telegram config restored"
+  fi
+  
+  # Restore telegram bot script if it was customized
+  if [ -f "$BACKUP_TEMP/bdrman/telegram_bot.py" ]; then
+    # Only restore if user had customizations (check if different from new version)
+    if ! diff -q "$BACKUP_TEMP/bdrman/telegram_bot.py" /etc/bdrman/telegram_bot.py >/dev/null 2>&1; then
+      echo "   ⚠️  You had a custom telegram_bot.py"
+      echo "   ℹ️  New version installed, old saved to telegram_bot.py.backup"
+      cp "$BACKUP_TEMP/bdrman/telegram_bot.py" /etc/bdrman/telegram_bot.py.backup
+    fi
+  fi
+  
+  # Clean up temp files
+  rm -rf "$BACKUP_TEMP"
+  rm -f /tmp/bdrman_install_latest.sh
+  
+  echo ""
+  echo "🔄 Restarting services..."
+  
+  # Restart telegram bot if it was running
+  if systemctl is-active --quiet bdrman-telegram 2>/dev/null; then
+    systemctl restart bdrman-telegram
+    echo "   ✅ Telegram bot restarted"
+  fi
+  
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "✅ UPDATE COMPLETE!"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo "📝 What was updated:"
+  echo "   • Main script: /usr/local/bin/bdrman"
+  echo "   • Libraries: /usr/local/lib/bdrman/"
+  echo "   • Telegram bot: /etc/bdrman/telegram_bot.py"
+  echo ""
+  echo "🔒 What was preserved:"
+  echo "   • Your Telegram token & chat ID"
+  echo "   • All backups"
+  echo "   • System logs"
+  echo ""
+  echo "💡 Next steps:"
+  echo "   • Test Telegram bot: Send /help to your bot"
+  echo "   • Check status: systemctl status bdrman-telegram"
+  echo ""
+  
+  log_success "BDRman updated successfully"
+  
+  read -rp "Press Enter to continue..."
 }
 
 check_updates(){
