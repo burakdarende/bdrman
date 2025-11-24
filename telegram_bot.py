@@ -549,18 +549,26 @@ async def updatebdr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Create update script that will notify after completion
     update_script = f"""#!/bin/bash
 # BDRman Update Script
+exec > /tmp/bdrman_update.log 2>&1
 cd /tmp
 
+echo "Starting update process..."
+sleep 2
+
 # Stop bot service first (so files can be updated)
+echo "Stopping bot service..."
 systemctl stop bdrman-telegram
 
 # Download latest installer
+echo "Downloading installer..."
 curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh -o bdrman_update.sh
 
 # Run update (auto-confirm)
-echo "yes" | bash bdrman_update.sh > /tmp/bdrman_update.log 2>&1
+echo "Running installer..."
+echo "yes" | bash bdrman_update.sh
 
 # Force restart bot service
+echo "Restarting bot service..."
 systemctl daemon-reload
 systemctl restart bdrman-telegram
 
@@ -618,10 +626,11 @@ rm -f /tmp/bdrman_update.sh /tmp/bdrman_updater.sh /tmp/bdrman_update.log
     
     run_cmd("chmod +x /tmp/bdrman_updater.sh")
     
-    # Run in background
-    subprocess.Popen(["/bin/bash", "/tmp/bdrman_updater.sh"], 
+    # Run in background using setsid to detach from parent process
+    subprocess.Popen(["setsid", "/bin/bash", "/tmp/bdrman_updater.sh"], 
                      stdout=subprocess.DEVNULL, 
-                     stderr=subprocess.DEVNULL)
+                     stderr=subprocess.DEVNULL,
+                     start_new_session=True)
     
     await update.message.reply_text(
         "⏳ *Update in progress...*\n\n"
