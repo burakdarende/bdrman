@@ -172,18 +172,33 @@ system_update(){
   
   # Send Telegram notification if configured
   if [ -f /etc/bdrman/telegram.conf ]; then
+    echo "📨 Sending Telegram notification..."
     source /etc/bdrman/telegram.conf 2>/dev/null
     if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
       HOSTNAME=$(hostname)
-      # Read NEW version from updated bdrman script (not old VERSION variable!)
+      # Read NEW version from updated bdrman script
       NEW_VERSION=$(grep 'VERSION=' /usr/local/bin/bdrman | head -1 | cut -d'=' -f2 | tr -d '"')
       MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: ${NEW_VERSION}%0A💻 Server: ${HOSTNAME}%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0AAll systems ready!"
-      curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+      
+      # Try sending with verbose output for debugging
+      HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
         -d "chat_id=${CHAT_ID}" \
         -d "text=${MESSAGE}" \
-        -d "parse_mode=Markdown" > /dev/null 2>&1
-      echo "📱 Telegram notification sent (Version: ${NEW_VERSION})"
+        -d "parse_mode=Markdown")
+        
+      if [ "$HTTP_STATUS" -eq 200 ]; then
+        echo "   ✅ Notification sent (Version: ${NEW_VERSION})"
+      else
+        echo "   ❌ Failed to send notification (HTTP $HTTP_STATUS)"
+        # Retry once without silence to see error
+        curl -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+          -d "chat_id=${CHAT_ID}" \
+          -d "text=${MESSAGE}" \
+          -d "parse_mode=Markdown"
+      fi
       echo ""
+    else
+      echo "   ⚠️  Telegram config missing TOKEN or CHAT_ID"
     fi
   fi
   echo "💡 Next steps:"

@@ -116,7 +116,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cats[c['cat']] = []
         cats[c['cat']].append(c)
     
-    msg = f"🤖 *BDRman v{VERSION}*\n� `{SERVER_NAME}`\n\n"
+    msg = f"🤖 *BDRman v{VERSION}*\n `{SERVER_NAME}`\n\n"
     for cat, cmds in sorted(cats.items()):
         msg += f"*{cat}*\n"
         for c in cmds:
@@ -266,7 +266,7 @@ async def capstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     certbot_status = run_cmd("docker ps --filter name=captain-certbot --format '{{.Names}}|{{.Status}}'")
     
     # Count apps
-    apps_count = run_cmd("docker ps --filter name=captain-captain --format '{{.Names}}' | grep -v 'captain-captain\\|captain-nginx\\|captain-certbot' | wc -l")
+    apps_count = run_cmd("docker ps --filter name=captain-captain --format '{{.Names}}' | grep -v 'captain-captain\|captain-nginx\|captain-certbot' | wc -l")
     
     msg = f"🚢 *CapRover Status*\n\n"
     
@@ -294,7 +294,7 @@ async def capapps_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     
     # Get all CapRover apps (containers starting with captain- but not core services)
-    apps = run_cmd("docker ps -a --filter name=captain- --format '{{.Names}}|{{.Status}}' | grep -v 'captain-captain\\|captain-nginx\\|captain-certbot\\|captain-registry'")
+    apps = run_cmd("docker ps -a --filter name=captain- --format '{{.Names}}|{{.Status}}' | grep -v 'captain-captain\|captain-nginx\|captain-certbot\|captain-registry'")
     
     if not apps or apps.strip() == "":
         await update.message.reply_text("📦 No apps deployed")
@@ -415,7 +415,7 @@ async def capinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"RAM: `{mem.strip()}`\n"
     
     # Get app count
-    app_count = run_cmd("docker ps --filter name=captain- --format '{{.Names}}' | grep -v 'captain-captain\\|captain-nginx\\|captain-certbot\\|captain-registry' | wc -l")
+    app_count = run_cmd("docker ps --filter name=captain- --format '{{.Names}}' | grep -v 'captain-captain\|captain-nginx\|captain-certbot\|captain-registry' | wc -l")
     msg += f"\n📦 Total Apps: `{app_count.strip()}`"
     
     await update.message.reply_text(msg, parse_mode='Markdown')
@@ -773,7 +773,7 @@ async def kernel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def alerts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
-    msg = "� *Alerts*\n\n"
+    msg = "🚨 *Alerts*\n\n"
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
@@ -928,8 +928,23 @@ def main():
     )
     app.add_handler(conv)
     
+    # Startup notification
+    if BOT_TOKEN and CHAT_ID:
+        try:
+            import requests
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                data={
+                    "chat_id": CHAT_ID, 
+                    "text": f"🤖 *BDRman Bot Started*\\n\\nVersion: `{VERSION}`\\nServer: `{SERVER_NAME}`\\n\\nReady for commands!", 
+                    "parse_mode": "Markdown"
+                }
+            )
+        except Exception as e:
+            logger.error(f"Startup notification failed: {e}")
+
     logger.info(f"Bot v{VERSION} started for {SERVER_NAME}")
-    print(f"🤖 BDRman Bot v{VERSION} running for {SERVER_NAME}")
+    print(f"✅ Bot started on {SERVER_NAME}")
     print(f"📊 {len(COMMANDS)} commands registered")
     app.run_polling()
 
