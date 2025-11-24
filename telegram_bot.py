@@ -25,7 +25,7 @@ def get_version():
                     return line.split('=')[1].strip().strip('"')
     except:
         pass
-    return "4.8.5"  # Fallback if bdrman script not found
+    return "4.8.6"  # Fallback if bdrman script not found
 
 VERSION = get_version()
 
@@ -247,6 +247,171 @@ async def disk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     df = run_cmd("df -h")
     await update.message.reply_text(f"💾 *Disk*\n```\n{df}\n```", parse_mode='Markdown')
+
+# === CAPROVER MANAGEMENT ===
+
+async def capstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    # Check if CapRover is installed
+    caprover_check = run_cmd("docker ps --filter name=captain-captain --format '{{.Status}}'")
+    if not caprover_check or "Error" in caprover_check:
+        await update.message.reply_text("❌ CapRover not found\nIs it installed?")
+        return
+    
+    # Get CapRover status
+    captain_status = run_cmd("docker ps --filter name=captain-captain --format '{{.Names}}|{{.Status}}'")
+    nginx_status = run_cmd("docker ps --filter name=captain-nginx --format '{{.Names}}|{{.Status}}'")
+    certbot_status = run_cmd("docker ps --filter name=captain-certbot --format '{{.Names}}|{{.Status}}'")
+    
+    # Count apps
+    apps_count = run_cmd("docker ps --filter name=captain-captain --format '{{.Names}}' | grep -v 'captain-captain\\|captain-nginx\\|captain-certbot' | wc -l")
+    
+    msg = f"🚢 *CapRover Status*\n\n"
+    
+    # Core services
+    if "Up" in captain_status:
+        msg += "✅ Captain: Running\n"
+    else:
+        msg += "❌ Captain: Down\n"
+    
+    if "Up" in nginx_status:
+        msg += "✅ Nginx: Running\n"
+    else:
+        msg += "⚠️ Nginx: Down\n"
+    
+    if "Up" in certbot_status:
+        msg += "✅ Certbot: Running\n"
+    else:
+        msg += "⚠️ Certbot: Down\n"
+    
+    msg += f"\n📦 Apps: `{apps_count.strip()}` running"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def capapps_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    # Get all CapRover apps (containers starting with captain- but not core services)
+    apps = run_cmd("docker ps -a --filter name=captain- --format '{{.Names}}|{{.Status}}' | grep -v 'captain-captain\\|captain-nginx\\|captain-certbot\\|captain-registry'")
+    
+    if not apps or apps.strip() == "":
+        await update.message.reply_text("📦 No apps deployed")
+        return
+    
+    lines = [l for l in apps.split('\n') if l.strip()]
+    msg = f"📦 *CapRover Apps ({len(lines)})*\n\n"
+    
+    for line in lines[:20]:
+        parts = line.split('|')
+        if len(parts) == 2:
+            name, status = parts
+            # Remove captain- prefix for readability
+            app_name = name.replace('captain-', '')
+            icon = "🟢" if "Up" in status else "🔴"
+            msg += f"{icon} `{app_name}`\n"
+    
+    if len(lines) > 20:
+        msg += f"\n...and {len(lines) - 20} more"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def caplogs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /caplogs <app_name>\n\n"
+            "Example: /caplogs myapp\n"
+            "(Don't include 'captain-' prefix)"
+        )
+        return
+    
+    app_name = context.args[0]
+    # Add captain- prefix if not present
+    if not app_name.startswith('captain-'):
+        container_name = f"captain-{app_name}"
+    else:
+        container_name = app_name
+    
+    logs = run_cmd(f"docker logs --tail 50 {container_name} 2>&1")
+    
+    if "Error" in logs and "No such container" in logs:
+        await update.message.reply_text(f"❌ App `{app_name}` not found")
+        return
+    
+    if len(logs) > 3500:
+        logs = logs[-3500:]
+    
+    await update.message.reply_text(f"📜 *{app_name}*\n```\n{logs}\n```", parse_mode='Markdown')
+
+async def caprestart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /caprestart <app_name|all>\n\n"
+            "Examples:\n"
+            "/caprestart myapp - Restart specific app\n"
+            "/caprestart all - Restart CapRover core"
+        )
+        return
+    
+    target = context.args[0]
+    
+    if target == "all":
+        await update.message.reply_text("🔄 Restarting CapRover core...")
+        run_cmd("docker restart captain-captain captain-nginx captain-certbot")
+        await update.message.reply_text("✅ CapRover core restarted")
+    else:
+        # Add captain- prefix if not present
+        if not target.startswith('captain-'):
+            container_name = f"captain-{target}"
+        else:
+            container_name = target
+        
+        await update.message.reply_text(f"🔄 Restarting `{target}`...")
+        result = run_cmd(f"docker restart {container_name}")
+        
+        if "Error" in result:
+            await update.message.reply_text(f"❌ Failed: {result}")
+        else:
+            await update.message.reply_text(f"✅ `{target}` restarted")
+
+async def capinfo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    
+    # Get CapRover version and info
+    version = run_cmd("docker exec captain-captain cat /usr/src/app/package.json 2>/dev/null | grep '\"version\"' | cut -d'\"' -f4")
+    
+    # Get resource usage
+    captain_stats = run_cmd("docker stats captain-captain --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}'")
+    
+    # Get domain
+    domain = run_cmd("docker exec captain-captain cat /captain/data/config-captain.json 2>/dev/null | grep 'customDomain' | cut -d'\"' -f4")
+    
+    msg = "🚢 *CapRover Info*\n\n"
+    
+    if version and version.strip():
+        msg += f"📌 Version: `{version.strip()}`\n"
+    
+    if domain and domain.strip():
+        msg += f"🌐 Domain: `{domain.strip()}`\n"
+    
+    if captain_stats:
+        parts = captain_stats.split('|')
+        if len(parts) == 2:
+            cpu, mem = parts
+            msg += f"\n📊 *Resources*\n"
+            msg += f"CPU: `{cpu.strip()}`\n"
+            msg += f"RAM: `{mem.strip()}`\n"
+    
+    # Get app count
+    app_count = run_cmd("docker ps --filter name=captain- --format '{{.Names}}' | grep -v 'captain-captain\\|captain-nginx\\|captain-certbot\\|captain-registry' | wc -l")
+    msg += f"\n📦 Total Apps: `{app_count.strip()}`"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
 
 async def network_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -657,6 +822,11 @@ def main():
     register_command("users", "Logged users", "📊 Monitoring")
     register_command("last", "Last logins", "📊 Monitoring")
     register_command("snapshot", "Snapshot (PIN)", "🚨 Critical")
+    register_command("capstatus", "CapRover status", "🚢 CapRover")
+    register_command("capapps", "List CapRover apps", "🚢 CapRover")
+    register_command("caplogs", "App logs", "🚢 CapRover")
+    register_command("caprestart", "Restart app/core", "🚢 CapRover")
+    register_command("capinfo", "CapRover info", "🚢 CapRover")
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
@@ -699,6 +869,13 @@ def main():
     app.add_handler(CommandHandler("reboot", reboot_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("last", last_cmd))
+    
+    # CapRover handlers
+    app.add_handler(CommandHandler("capstatus", capstatus_cmd))
+    app.add_handler(CommandHandler("capapps", capapps_cmd))
+    app.add_handler(CommandHandler("caplogs", caplogs_cmd))
+    app.add_handler(CommandHandler("caprestart", caprestart_cmd))
+    app.add_handler(CommandHandler("capinfo", capinfo_cmd))
     
     # PIN conversation
     conv = ConversationHandler(
