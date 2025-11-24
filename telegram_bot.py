@@ -15,7 +15,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Conve
 # Configuration
 CONFIG_FILE = "/etc/bdrman/telegram.conf"
 LOG_FILE = "/var/log/bdrman-bot.log"
-VERSION = "4.8.1"
+VERSION = "4.8.2"
 
 # Logging
 logging.basicConfig(
@@ -525,15 +525,17 @@ def main():
     
     # Register commands
     register_command("start", "Start bot", "📌 General")
-    register_command("help", "Show commands", "📌 General")
+    register_command("help", "Show all commands", "📌 General")
     register_command("version", "Version info", "📌 General")
-    register_command("status", "System status + logs", "📊 Monitoring")
+    register_command("status", "System status + colored logs", "📊 Monitoring")
     register_command("health", "Health check", "📊 Monitoring")
     register_command("alerts", "Active alerts", "📊 Monitoring")
-    register_command("top", "Top CPU", "📊 Monitoring")
-    register_command("mem", "Top RAM", "📊 Monitoring")
+    register_command("top", "Top CPU processes", "📊 Monitoring")
+    register_command("mem", "Memory usage", "📊 Monitoring")
     register_command("disk", "Disk usage", "📊 Monitoring")
-    register_command("uptime", "Uptime", "📊 Monitoring")
+    register_command("uptime", "System uptime", "📊 Monitoring")
+    register_command("users", "Logged users", "📊 Monitoring")
+    register_command("last", "Last logins", "📊 Monitoring")
     register_command("docker", "List containers", "🐳 Docker")
     register_command("logs", "Container logs", "🐳 Docker")
     register_command("restart", "Restart container", "🐳 Docker")
