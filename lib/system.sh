@@ -86,6 +86,12 @@ system_update(){
   # Run installer
   if bash "/tmp/bdrman_install_latest.sh"; then
     echo "   ✅ Installation complete"
+    # Overwrite installed script with the current source version (if this script is newer)
+    if [ -f "$(dirname "$0")/bdrman.sh" ]; then
+      cp "$(dirname "$0")/bdrman.sh" "/usr/local/bin/bdrman"
+      chmod +x "/usr/local/bin/bdrman"
+      echo "   ✅ Updated /usr/local/bin/bdrman with local version"
+    fi
   else
     echo "❌ Installation failed"
     echo "   Restoring backup..."
@@ -156,6 +162,12 @@ system_update(){
     systemctl restart bdrman-telegram
     sleep 2  # Wait for bot to initialize
     echo "   ✅ Bot restarted"
+  fi
+
+  # Reload VERSION from the newly installed script
+  if [ -f "/usr/local/bin/bdrman" ]; then
+    source "/usr/local/bin/bdrman"
+    echo "🔁 Reloaded VERSION: ${VERSION}"
   fi
   
   # Send Telegram notification if configured
