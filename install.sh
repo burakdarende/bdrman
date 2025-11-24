@@ -96,6 +96,9 @@ fi
 
 # Install Telegram Bot Script
 echo "⬇️  Installing Telegram Bot..."
+# Stop service if running to allow file update
+systemctl stop bdrman-telegram 2>/dev/null || true
+
 if [ -f "telegram_bot.py" ]; then
   cp "telegram_bot.py" "$CONFIG_DIR/telegram_bot.py"
 else
@@ -132,6 +135,12 @@ systemctl daemon-reload
 # Don't start it yet, user needs to configure it first (token)
 # But we can enable it
 systemctl enable bdrman-telegram.service
+
+# Restart service if config exists (Update scenario)
+if [ -f "$CONFIG_DIR/telegram.conf" ]; then
+  echo "🔄 Restarting Telegram Bot..."
+  systemctl restart bdrman-telegram
+fi
 
 # Set permissions
 chmod 700 "$CONFIG_DIR"
