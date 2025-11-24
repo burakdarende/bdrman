@@ -25,7 +25,7 @@ def get_version():
                     return line.split('=')[1].strip().strip('"')
     except:
         pass
-    return "4.8.6"  # Fallback if bdrman script not found
+    return "4.8.7"  # Fallback if bdrman script not found
 
 VERSION = get_version()
 
@@ -544,16 +544,24 @@ async def updatebdr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # BDRman Update Script
 cd /tmp
 
+# Stop bot service first (so files can be updated)
+systemctl stop bdrman-telegram
+
 # Download latest installer
 curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh -o bdrman_update.sh
 
 # Run update (auto-confirm)
 echo "yes" | bash bdrman_update.sh > /dev/null 2>&1
 
-# Wait for bot service to restart (max 10 seconds)
-for i in {{1..10}}; do
+# Force restart bot service
+systemctl daemon-reload
+systemctl restart bdrman-telegram
+
+# Wait for bot to be fully ready (max 15 seconds)
+for i in {{1..15}}; do
   if systemctl is-active --quiet bdrman-telegram; then
-    sleep 1
+    # Give bot time to fully initialize
+    sleep 2
     break
   fi
   sleep 1
