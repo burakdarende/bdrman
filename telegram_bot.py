@@ -249,6 +249,65 @@ async def ports_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ports = run_cmd("ss -tuln | grep LISTEN || netstat -tuln | grep LISTEN 2>/dev/null")
     await update.message.reply_text(f"👂 *Ports*\n```\n{ports}\n```", parse_mode='Markdown')
 
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    if not context.args:
+        await update.message.reply_text("Usage: /ping <host>")
+        return
+    host = context.args[0]
+    ping = run_cmd(f"ping -c 4 {host}")
+    await update.message.reply_text(f"🏓 *Ping {host}*\n```\n{ping}\n```", parse_mode='Markdown')
+
+async def dns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    if not context.args:
+        await update.message.reply_text("Usage: /dns <domain>")
+        return
+    domain = context.args[0]
+    dns = run_cmd(f"nslookup {domain}")
+    await update.message.reply_text(f"🔍 *DNS: {domain}*\n```\n{dns}\n```", parse_mode='Markdown')
+
+async def speedtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    await update.message.reply_text("🚀 Running speedtest...")
+    speed = run_cmd("speedtest-cli --simple 2>/dev/null || echo 'Install: apt install speedtest-cli'", timeout=60)
+    await update.message.reply_text(f"📊 *Speed Test*\n```\n{speed}\n```", parse_mode='Markdown')
+
+async def ssl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    if not context.args:
+        await update.message.reply_text("Usage: /ssl <domain>")
+        return
+    domain = context.args[0]
+    expiry = run_cmd(f"echo | openssl s_client -servername {domain} -connect {domain}:443 2>/dev/null | openssl x509 -noout -dates")
+    await update.message.reply_text(f"🔒 *SSL: {domain}*\n```\n{expiry}\n```", parse_mode='Markdown')
+
+async def cert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    certs = run_cmd("certbot certificates 2>/dev/null || echo 'Certbot not installed'")
+    await update.message.reply_text(f"🔒 *SSL Certificates*\n```\n{certs}\n```", parse_mode='Markdown')
+
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    users = run_cmd("who")
+    await update.message.reply_text(f"👥 *Logged Users*\n```\n{users}\n```", parse_mode='Markdown')
+
+async def last_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    last = run_cmd("last -n 10")
+    await update.message.reply_text(f"🔑 *Last Logins*\n```\n{last}\n```", parse_mode='Markdown')
+
+async def nginx_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    status = run_cmd("systemctl status nginx --no-pager -l")
+    await update.message.reply_text(f"🌐 *Nginx*\n```\n{status}\n```", parse_mode='Markdown')
+
+async def reboot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return
+    await update.message.reply_text("⚠️ Rebooting in 1 minute...")
+    run_cmd("shutdown -r +1")
+    await update.message.reply_text("✅ Reboot scheduled")
+
 async def vpn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     if not context.args:
@@ -480,6 +539,11 @@ def main():
     register_command("restart", "Restart container", "🐳 Docker")
     register_command("network", "Network stats", "🌐 Network")
     register_command("ports", "Listening ports", "🌐 Network")
+    register_command("ping", "Ping host", "🌐 Network")
+    register_command("dns", "DNS lookup", "🌐 Network")
+    register_command("speedtest", "Internet speed", "🌐 Network")
+    register_command("ssl", "Check SSL cert", "🔒 SSL")
+    register_command("cert", "List certificates", "🔒 SSL")
     register_command("firewall", "Firewall status", "🛡️ Security")
     register_command("block", "Block IP", "🛡️ Security")
     register_command("unblock", "Unblock IP", "🛡️ Security")
@@ -487,13 +551,17 @@ def main():
     register_command("unpanic", "Exit panic", "🛡️ Security")
     register_command("vpn", "Create VPN user", "🔧 Management")
     register_command("backup", "Create backup", "🔧 Management")
-    register_command("update", "Update packages", "🔧 Management")
-    register_command("updatebdr", "Update BDRman", "🔧 Management")
-    register_command("export", "Export config", "🔧 Management")
-    register_command("import", "Import config", "🔧 Management")
-    register_command("services", "Service overview", "🔧 Management")
-    register_command("running", "Running services", "🔧 Management")
+    register_command("update", "Update system packages", "🔧 Management")
+    register_command("updatebdr", "Update BDRman itself", "🔧 Management")
+    register_command("export", "Export config as JSON", "🔧 Management")
+    register_command("import", "Import config (soon)", "🔧 Management")
+    register_command("services", "Service status overview", "🔧 Management")
+    register_command("running", "All running services", "🔧 Management")
+    register_command("nginx", "Nginx status", "🔧 Management")
     register_command("kernel", "Kernel info", "🔧 Management")
+    register_command("reboot", "Reboot server", "🔧 Management")
+    register_command("users", "Logged users", "📊 Monitoring")
+    register_command("last", "Last logins", "📊 Monitoring")
     register_command("snapshot", "Snapshot (PIN)", "🚨 Critical")
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -514,6 +582,11 @@ def main():
     app.add_handler(CommandHandler("restart", restart_cmd))
     app.add_handler(CommandHandler("network", network_cmd))
     app.add_handler(CommandHandler("ports", ports_cmd))
+    app.add_handler(CommandHandler("ping", ping_cmd))
+    app.add_handler(CommandHandler("dns", dns_cmd))
+    app.add_handler(CommandHandler("speedtest", speedtest_cmd))
+    app.add_handler(CommandHandler("ssl", ssl_cmd))
+    app.add_handler(CommandHandler("cert", cert_cmd))
     app.add_handler(CommandHandler("firewall", firewall_cmd))
     app.add_handler(CommandHandler("block", block_cmd))
     app.add_handler(CommandHandler("unblock", unblock_cmd))
@@ -527,7 +600,11 @@ def main():
     app.add_handler(CommandHandler("import", import_cmd))
     app.add_handler(CommandHandler("services", services_cmd))
     app.add_handler(CommandHandler("running", running_cmd))
+    app.add_handler(CommandHandler("nginx", nginx_cmd))
     app.add_handler(CommandHandler("kernel", kernel_cmd))
+    app.add_handler(CommandHandler("reboot", reboot_cmd))
+    app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CommandHandler("last", last_cmd))
     
     # PIN conversation
     conv = ConversationHandler(
