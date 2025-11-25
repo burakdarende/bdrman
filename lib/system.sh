@@ -226,7 +226,7 @@ uninstall_bdrman(){
   echo "    - Data:     /opt/bdrman (venv, libs)"
   echo "    - Logs:     /var/log/bdrman*"
   echo "    - Services: bdrman-telegram.service"
-  echo "    - Cron:     Weekly reports"
+  echo "    - Cron:     Weekly reports & Auto-recovery"
   echo ""
   echo "    Backups in $BACKUP_DIR will be PRESERVED unless you choose to delete them."
   
@@ -242,6 +242,7 @@ uninstall_bdrman(){
   echo "🗑️  Removing binaries and libraries..."
   rm -f /usr/local/bin/bdrman
   rm -f /usr/local/bin/bdrman-telegram
+  rm -f /usr/local/bin/bdrman-recovery
   
   # Remove new library location
   rm -rf /usr/local/lib/bdrman
@@ -263,7 +264,8 @@ uninstall_bdrman(){
   rm -f /var/log/bdrman*
   
   echo "🗑️  Cleaning cron jobs..."
-  crontab -l 2>/dev/null | grep -v "telegram_weekly_report.sh" | crontab -
+  # Remove both weekly report and recovery jobs
+  crontab -l 2>/dev/null | grep -v "telegram_weekly_report.sh" | grep -v "bdrman-recovery" | crontab -
   
   read -rp "❓ Do you want to delete all backups in $BACKUP_DIR? (y/n): " del_backups
   if [[ "$del_backups" =~ ^[Yy]$ ]]; then
