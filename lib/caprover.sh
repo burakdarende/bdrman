@@ -1,7 +1,38 @@
 # ============= CAPROVER =============
+
+get_caprover_container() {
+  # Try to find container named 'caprover' or 'captain-captain' or just containing 'captain'
+  local container=$(docker ps --filter "name=^/?caprover$" --format "{{.Names}}" | head -n1)
+  if [ -z "$container" ]; then
+    container=$(docker ps --filter "name=captain" --format "{{.Names}}" | head -n1)
+  fi
+  echo "$container"
+}
+
+get_docker_volumes_dir() {
+  local docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)
+  if [ -n "$docker_root" ]; then
+    echo "$docker_root/volumes"
+  else
+    echo "/var/lib/docker/volumes"
+  fi
+}
+
 caprover_check(){
   if command_exists docker; then
-    docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep -i 'caprover' || echo "CapRover container not found."
+    echo "🔍 Checking for CapRover container..."
+    CAP_CONTAINER=$(get_caprover_container)
+    
+    if [ -n "$CAP_CONTAINER" ]; then
+      echo "✅ Found CapRover container: $CAP_CONTAINER"
+      docker ps --filter "name=$CAP_CONTAINER" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+    else
+      echo "❌ CapRover container not found."
+      echo "   Checked for names: 'caprover', 'captain-captain', or containing 'captain'"
+      echo ""
+      echo "   Running containers:"
+      docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | head -n 10
+    fi
   else
     echo "Docker not installed."
   fi
@@ -9,8 +40,9 @@ caprover_check(){
 
 caprover_logs(){
   if command_exists docker; then
-    CAP_CONTAINER=$(docker ps --filter "name=caprover" --format "{{.Names}}" | head -n1)
+    CAP_CONTAINER=$(get_caprover_container)
     if [ -n "$CAP_CONTAINER" ]; then
+      echo "Logs for $CAP_CONTAINER:"
       docker logs --tail 200 -f "$CAP_CONTAINER"
     else
       echo "CapRover container not found."
@@ -22,7 +54,7 @@ caprover_logs(){
 
 caprover_restart(){
   if command_exists docker; then
-    CAP_CONTAINER=$(docker ps --filter "name=caprover" --format "{{.Names}}" | head -n1)
+    CAP_CONTAINER=$(get_caprover_container)
     if [ -n "$CAP_CONTAINER" ]; then
       docker restart "$CAP_CONTAINER" && echo "CapRover restarted ($CAP_CONTAINER)." || echo "Restart failed."
     else
@@ -40,13 +72,15 @@ caprover_backup(){
   # Acquire lock to prevent concurrent backups
   acquire_lock "caprover_backup" || return 1
   
-  VOLUMES_DIR="/var/lib/docker/volumes"
+  VOLUMES_DIR=$(get_docker_volumes_dir)
   BACKUP_BASE_DIR="/root/capBackup"
+  
+  echo "🔍 Docker Volumes Directory: $VOLUMES_DIR"
   
   # Check if volumes directory exists
   if [ ! -d "$VOLUMES_DIR" ]; then
     echo "❌ Docker volumes directory not found: $VOLUMES_DIR"
-    echo "   Make sure Docker is installed and CapRover is running."
+    echo "   Make sure Docker is installed and running."
     return 1
   fi
   
@@ -72,8 +106,10 @@ caprover_backup(){
     echo "⚠️  No CapRover volumes found in $VOLUMES_DIR"
     echo "   Looking for volumes with 'captain-' or 'cap-' prefix"
     echo ""
-    echo "All volumes in the directory:"
-    ls -la "$VOLUMES_DIR" 2>/dev/null || echo "Cannot list directory"
+    echo "   Debug Info:"
+    echo "   Docker Root: $(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+    echo "   Volumes Dir contents:"
+    ls -la "$VOLUMES_DIR" 2>/dev/null | head -n 10 || echo "Cannot list directory"
     return
   fi
   
@@ -293,7 +329,7 @@ caprover_restore_backup(){
   echo ""
   
   BACKUP_BASE_DIR="/root/capBackup"
-  VOLUMES_DIR="/var/lib/docker/volumes"
+  VOLUMES_DIR=$(get_docker_volumes_dir)
   
   if [ ! -d "$BACKUP_BASE_DIR" ]; then
     echo "❌ No backups found. Backup directory doesn't exist."
