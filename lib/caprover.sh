@@ -102,9 +102,14 @@ caprover_backup(){
   # List all volumes
   VOLUMES=($(ls -1 "$VOLUMES_DIR" 2>/dev/null | grep -E "(captain-|cap-)" | sort))
   
+  # Check for /captain bind mount (Standard CapRover)
+  if [ -d "/captain" ]; then
+    VOLUMES+=("CapRover-Root-Data")
+  fi
+  
   if [ ${#VOLUMES[@]} -eq 0 ]; then
     echo "⚠️  No CapRover volumes found in $VOLUMES_DIR"
-    echo "   Looking for volumes with 'captain-' or 'cap-' prefix"
+    echo "⚠️  No /captain directory found."
     echo ""
     echo "   Debug Info:"
     echo "   Docker Root: $(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
@@ -113,29 +118,36 @@ caprover_backup(){
     return
   fi
   
-  echo "Found ${#VOLUMES[@]} CapRover volume(s):"
+  echo "Found ${#VOLUMES[@]} CapRover volume(s)/data:"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   
   # Display volumes with sizes
   for i in "${!VOLUMES[@]}"; do
     VOLUME="${VOLUMES[$i]}"
-    VOLUME_PATH="$VOLUMES_DIR/$VOLUME/_data"
+    
+    if [ "$VOLUME" == "CapRover-Root-Data" ]; then
+      VOLUME_PATH="/captain"
+      DISPLAY_NAME="CapRover Root Data (/captain)"
+    else
+      VOLUME_PATH="$VOLUMES_DIR/$VOLUME/_data"
+      DISPLAY_NAME="$VOLUME"
+    fi
     
     if [ -d "$VOLUME_PATH" ]; then
       SIZE=$(du -sh "$VOLUME_PATH" 2>/dev/null | cut -f1 || echo "N/A")
-      echo "$(($i + 1)). $VOLUME (Size: $SIZE)"
+      echo "$(($i + 1)). $DISPLAY_NAME (Size: $SIZE)"
     else
-      echo "$(($i + 1)). $VOLUME (⚠️  _data folder not found)"
+      echo "$(($i + 1)). $DISPLAY_NAME (⚠️  Path not found)"
     fi
   done
   
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   echo "Options:"
-  echo "a) Backup ALL volumes"
+  echo "a) Backup ALL"
   echo "0) Cancel"
   echo ""
-  read -rp "Select volume(s) to backup (number, 'a' for all, or '0' to cancel): " choice
+  read -rp "Select to backup (number, 'a' for all, or '0' to cancel): " choice
   
   case "$choice" in
     0)
@@ -143,7 +155,7 @@ caprover_backup(){
       return
       ;;
     a|A)
-      echo "🔄 Backing up ALL volumes..."
+      echo "🔄 Backing up ALL..."
       SELECTED_VOLUMES=("${VOLUMES[@]}")
       ;;
     *)
@@ -169,10 +181,16 @@ caprover_backup(){
     echo ""
     echo "📦 Processing: $VOLUME"
     
-    VOLUME_PATH="$VOLUMES_DIR/$VOLUME/_data"
+    if [ "$VOLUME" == "CapRover-Root-Data" ]; then
+      VOLUME_PATH="/captain"
+      IS_ROOT_DATA=true
+    else
+      VOLUME_PATH="$VOLUMES_DIR/$VOLUME/_data"
+      IS_ROOT_DATA=false
+    fi
     
     if [ ! -d "$VOLUME_PATH" ]; then
-      echo "   ⚠️  Skipping - _data directory not found"
+      echo "   ⚠️  Skipping - Directory not found"
       continue
     fi
     
@@ -192,7 +210,17 @@ caprover_backup(){
     # Create atomic backup with .partial file
     BACKUP_PARTIAL="${BACKUP_FILE}.partial"
     
-    if timeout "${BACKUP_TIMEOUT:-600}" tar -czf "$BACKUP_PARTIAL" -C "$VOLUMES_DIR/$VOLUME" _data 2>/dev/null; then
+    # Compression command depends on type
+    if [ "$IS_ROOT_DATA" = true ]; then
+      # Backup /captain contents. We use -C / captain to include 'captain' folder in root of archive
+      # This makes restore easier (tar -C /)
+      CMD="tar -czf \"$BACKUP_PARTIAL\" -C / captain"
+    else
+      # Standard volume: backup _data folder
+      CMD="tar -czf \"$BACKUP_PARTIAL\" -C \"$VOLUMES_DIR/$VOLUME\" _data"
+    fi
+    
+    if timeout "${BACKUP_TIMEOUT:-600}" eval "$CMD" 2>/dev/null; then
       # Move partial to final only on success
       mv "$BACKUP_PARTIAL" "$BACKUP_FILE"
       
@@ -219,7 +247,7 @@ caprover_backup(){
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "🎯 BACKUP SUMMARY"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "✅ Volumes backed up: $TOTAL_BACKED_UP/${#SELECTED_VOLUMES[@]}"
+  echo "✅ Items backed up: $TOTAL_BACKED_UP/${#SELECTED_VOLUMES[@]}"
   
   if [ $TOTAL_SIZE -gt 0 ]; then
     TOTAL_SIZE_HUMAN=$(echo $TOTAL_SIZE | awk '{
@@ -242,7 +270,7 @@ caprover_backup(){
     echo "   $line"
   done
   
-  log_success "CapRover backup session completed: $TOTAL_BACKED_UP volumes backed up"
+  log_success "CapRover backup session completed: $TOTAL_BACKED_UP items backed up"
 }
 
 caprover_list_backups(){
@@ -336,11 +364,6 @@ caprover_restore_backup(){
     return
   fi
   
-  if [ ! -d "$VOLUMES_DIR" ]; then
-    echo "❌ Docker volumes directory not found: $VOLUMES_DIR"
-    return
-  fi
-  
   echo "🔍 Searching for available backups..."
   
   # Find all backup files
@@ -395,14 +418,27 @@ caprover_restore_backup(){
   
   echo ""
   echo "📦 Selected backup: $FILENAME"
-  echo "🔄 Target volume: $VOLUME_NAME"
-  echo "📁 Volume path: $VOLUMES_DIR/$VOLUME_NAME"
+  echo "🔄 Target: $VOLUME_NAME"
+  
+  # Determine paths based on volume name
+  if [ "$VOLUME_NAME" == "CapRover-Root-Data" ]; then
+    TARGET_PATH="/captain"
+    PARENT_DIR="/"
+    IS_ROOT_DATA=true
+    echo "📁 Restore Path: /captain"
+  else
+    TARGET_PATH="$VOLUMES_DIR/$VOLUME_NAME"
+    PARENT_DIR="$VOLUMES_DIR/$VOLUME_NAME"
+    IS_ROOT_DATA=false
+    echo "📁 Restore Path: $TARGET_PATH"
+  fi
+  
   echo ""
   
-  # Check if volume exists
-  if [ -d "$VOLUMES_DIR/$VOLUME_NAME" ]; then
-    echo "⚠️  WARNING: Volume '$VOLUME_NAME' already exists!"
-    echo "   This will OVERWRITE the existing volume data."
+  # Check if target exists
+  if [ -d "$TARGET_PATH" ]; then
+    echo "⚠️  WARNING: Target '$TARGET_PATH' already exists!"
+    echo "   This will OVERWRITE the existing data."
     echo ""
     read -rp "Do you want to continue? Type 'YES' to confirm: " confirm
     
@@ -411,55 +447,91 @@ caprover_restore_backup(){
       return
     fi
     
-    # Create backup of existing volume with Turkey time
-    echo "🔄 Creating safety backup of existing volume..."
+    # Create safety backup
+    echo "🔄 Creating safety backup of existing data..."
     export TZ='Europe/Istanbul'
     SAFETY_BACKUP="$BACKUP_BASE_DIR/safety_backup_${VOLUME_NAME}_$(date +%d%m%Y_%H%M).tar.gz"
-    tar -czf "$SAFETY_BACKUP" -C "$VOLUMES_DIR/$VOLUME_NAME" _data 2>/dev/null
+    
+    if [ "$IS_ROOT_DATA" = true ]; then
+      tar -czf "$SAFETY_BACKUP" -C / captain 2>/dev/null
+    else
+      tar -czf "$SAFETY_BACKUP" -C "$TARGET_PATH" _data 2>/dev/null
+    fi
+    
     echo "   ✅ Safety backup created: $SAFETY_BACKUP"
     
     # Remove existing data
-    echo "🗑️  Removing existing volume data..."
-    rm -rf "$VOLUMES_DIR/$VOLUME_NAME/_data"/*
+    echo "🗑️  Removing existing data..."
+    if [ "$IS_ROOT_DATA" = true ]; then
+      rm -rf "$TARGET_PATH"/*
+    else
+      rm -rf "$TARGET_PATH/_data"/*
+    fi
+    
   else
-    echo "📁 Volume doesn't exist. Creating new volume structure..."
-    mkdir -p "$VOLUMES_DIR/$VOLUME_NAME"
+    echo "📁 Target doesn't exist. Creating structure..."
+    mkdir -p "$TARGET_PATH"
   fi
   
   echo ""
   echo "🔄 Restoring from backup..."
   echo "   Source: $SELECTED_FILE"
-  echo "   Target: $VOLUMES_DIR/$VOLUME_NAME/"
+  echo "   Target: $TARGET_PATH"
   
   # Extract backup
-  if tar -xzf "$SELECTED_FILE" -C "$VOLUMES_DIR/$VOLUME_NAME/" 2>/dev/null; then
+  # For Root Data: archive contains 'captain/...', we extract to /
+  # For Volumes: archive contains '_data/...', we extract to volume dir
+  
+  if [ "$IS_ROOT_DATA" = true ]; then
+    EXTRACT_CMD="tar -xzf \"$SELECTED_FILE\" -C /"
+  else
+    EXTRACT_CMD="tar -xzf \"$SELECTED_FILE\" -C \"$TARGET_PATH/\""
+  fi
+  
+  if eval "$EXTRACT_CMD" 2>/dev/null; then
     echo "   ✅ Extraction successful!"
     
     # Set proper permissions
     echo "🔐 Setting permissions..."
-    chown -R root:root "$VOLUMES_DIR/$VOLUME_NAME"
+    chown -R root:root "$TARGET_PATH"
     
     # Verify restoration
-    if [ -d "$VOLUMES_DIR/$VOLUME_NAME/_data" ]; then
-      RESTORED_SIZE=$(du -sh "$VOLUMES_DIR/$VOLUME_NAME/_data" 2>/dev/null | cut -f1)
+    if [ "$IS_ROOT_DATA" = true ]; then
+       CHECK_PATH="$TARGET_PATH/config.json" # config.json usually exists in /captain
+       # Or just check if directory is not empty
+       if [ "$(ls -A $TARGET_PATH)" ]; then
+         VERIFIED=true
+       else
+         VERIFIED=false
+       fi
+    else
+       if [ -d "$TARGET_PATH/_data" ]; then
+         VERIFIED=true
+       else
+         VERIFIED=false
+       fi
+    fi
+    
+    if [ "$VERIFIED" = true ]; then
+      RESTORED_SIZE=$(du -sh "$TARGET_PATH" 2>/dev/null | cut -f1)
       echo "   📊 Restored size: $RESTORED_SIZE"
       
       echo ""
       echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
       echo "✅ RESTORE COMPLETED SUCCESSFULLY!"
       echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "📦 Volume: $VOLUME_NAME"
-      echo "📁 Location: $VOLUMES_DIR/$VOLUME_NAME/_data"
+      echo "📦 Item: $VOLUME_NAME"
+      echo "📁 Location: $TARGET_PATH"
       echo "💾 Size: $RESTORED_SIZE"
       echo "🕒 Restored: $(date '+%Y-%m-%d %H:%M:%S')"
       echo ""
       echo "⚠️  NOTE: You may need to restart the related Docker container"
       echo "          for the changes to take effect."
       
-      log_success "CapRover volume restored: $VOLUME_NAME from $FILENAME"
+      log_success "CapRover restored: $VOLUME_NAME from $FILENAME"
       
     else
-      echo "   ❌ Verification failed - _data directory not found after extraction"
+      echo "   ❌ Verification failed - Data not found after extraction"
       log_error "CapRover restore verification failed: $VOLUME_NAME"
     fi
     
