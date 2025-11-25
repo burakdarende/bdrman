@@ -213,21 +213,35 @@ caprover_backup(){
     # Compression command depends on type
     if [ "$IS_ROOT_DATA" = true ]; then
       # Backup /captain contents. We use -C / captain to include 'captain' folder in root of archive
-      # This makes restore easier (tar -C /)
       CMD="tar -czf \"$BACKUP_PARTIAL\" -C / captain"
     else
       # Standard volume: backup _data folder
       CMD="tar -czf \"$BACKUP_PARTIAL\" -C \"$VOLUMES_DIR/$VOLUME\" _data"
     fi
     
-    if timeout "${BACKUP_TIMEOUT:-600}" eval "$CMD" 2>/dev/null; then
-      # Move partial to final only on success
+    # Run backup and capture output/exit code
+    # We use a temporary file for stderr to show it if needed
+    ERR_LOG=$(mktemp)
+    
+    # Using timeout to prevent hangs
+    timeout "${BACKUP_TIMEOUT:-600}" bash -c "$CMD" 2> "$ERR_LOG"
+    EXIT_CODE=$?
+    
+    # Check exit code
+    # 0 = Success
+    # 1 = Warning (File changed as we read it - common for live backups)
+    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 1 ]; then
+      # Move partial to final
       mv "$BACKUP_PARTIAL" "$BACKUP_FILE"
       
       # Get compressed size
       COMPRESSED_SIZE=$(du -sh "$BACKUP_FILE" 2>/dev/null | cut -f1 || echo "N/A")
       
-      echo "   ✅ Success! Compressed to: $COMPRESSED_SIZE"
+      if [ $EXIT_CODE -eq 1 ]; then
+        echo "   ⚠️  Completed with warnings (files changed during backup)"
+      else
+        echo "   ✅ Success! Compressed to: $COMPRESSED_SIZE"
+      fi
       
       # Add to totals
       TOTAL_BACKED_UP=$((TOTAL_BACKED_UP + 1))
@@ -238,9 +252,13 @@ caprover_backup(){
     else
       # Cleanup partial file on failure
       rm -f "$BACKUP_PARTIAL"
-      echo "   ❌ Failed to create backup!"
-      log_error "CapRover backup failed: $VOLUME"
+      echo "   ❌ Failed to create backup! (Exit Code: $EXIT_CODE)"
+      echo "   Error details:"
+      cat "$ERR_LOG" | sed 's/^/      /'
+      log_error "CapRover backup failed: $VOLUME. Details: $(cat $ERR_LOG)"
     fi
+    
+    rm -f "$ERR_LOG"
   done
   
   echo ""
