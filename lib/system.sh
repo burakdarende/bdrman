@@ -279,6 +279,36 @@ uninstall_bdrman(){
   exit 0
 }
 
+system_setup_logrotate(){
+  echo "=== LOG ROTATION SETUP ==="
+  
+  if ! command_exists logrotate; then
+    echo "Installing logrotate..."
+    apt update && apt install -y logrotate
+  fi
+  
+  echo "Configuring log rotation for BDRman..."
+  
+  cat > /etc/logrotate.d/bdrman << 'EOF'
+/var/log/bdrman*.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 640 root root
+}
+EOF
+
+  # Verify
+  if [ -f /etc/logrotate.d/bdrman ]; then
+    success "Log rotation configured."
+    log "Log rotation enabled for /var/log/bdrman*.log"
+  else
+    error "Failed to create logrotate config."
+  fi
+}
+
 system_fix_permissions(){
   echo "=== FIX PERMISSIONS ==="
   echo "Fixing permissions for BDRman files..."

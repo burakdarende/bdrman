@@ -8,6 +8,7 @@ import sys
 import logging
 import subprocess
 import psutil
+import shlex
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, ConversationHandler, MessageHandler, filters
@@ -218,7 +219,7 @@ async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /logs <container>")
         return
-    name = context.args[0]
+    name = shlex.quote(context.args[0])
     logs = run_cmd(f"docker logs --tail 50 {name} 2>&1")
     if len(logs) > 3500:
         logs = logs[-3500:]
@@ -229,7 +230,7 @@ async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /restart <container>")
         return
-    name = context.args[0]
+    name = shlex.quote(context.args[0])
     await update.message.reply_text(f"🔄 Restarting `{name}`...")
     run_cmd(f"docker restart {name}")
     await update.message.reply_text("✅ Restarted")
@@ -328,7 +329,7 @@ async def caplogs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    app_name = context.args[0]
+    app_name = shlex.quote(context.args[0])
     # Add captain- prefix if not present
     if not app_name.startswith('captain-'):
         container_name = f"captain-{app_name}"
@@ -358,7 +359,7 @@ async def caprestart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    target = context.args[0]
+    target = shlex.quote(context.args[0])
     
     if target == "all":
         await update.message.reply_text("🔄 Restarting CapRover core...")
@@ -438,7 +439,7 @@ async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /ping <host>")
         return
-    host = context.args[0]
+    host = shlex.quote(context.args[0])
     ping = run_cmd(f"ping -c 4 {host}")
     await update.message.reply_text(f"🏓 *Ping {host}*\n```\n{ping}\n```", parse_mode='Markdown')
 
@@ -447,7 +448,7 @@ async def dns_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /dns <domain>")
         return
-    domain = context.args[0]
+    domain = shlex.quote(context.args[0])
     dns = run_cmd(f"nslookup {domain}")
     await update.message.reply_text(f"🔍 *DNS: {domain}*\n```\n{dns}\n```", parse_mode='Markdown')
 
@@ -462,7 +463,7 @@ async def ssl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /ssl <domain>")
         return
-    domain = context.args[0]
+    domain = shlex.quote(context.args[0])
     expiry = run_cmd(f"echo | openssl s_client -servername {domain} -connect {domain}:443 2>/dev/null | openssl x509 -noout -dates")
     await update.message.reply_text(f"🔒 *SSL: {domain}*\n```\n{expiry}\n```", parse_mode='Markdown')
 
@@ -497,7 +498,7 @@ async def vpn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /vpn <username>")
         return
-    user = context.args[0]
+    user = shlex.quote(context.args[0])
     if not user.isalnum():
         await update.message.reply_text("❌ Alphanumeric only")
         return
@@ -682,7 +683,7 @@ async def block_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /block <ip>")
         return
-    ip = context.args[0]
+    ip = shlex.quote(context.args[0])
     run_cmd(f"ufw deny from {ip}")
     await update.message.reply_text(f"🚫 Blocked: `{ip}`", parse_mode='Markdown')
 
@@ -691,7 +692,7 @@ async def unblock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /unblock <ip>")
         return
-    ip = context.args[0]
+    ip = shlex.quote(context.args[0])
     run_cmd(f"ufw delete deny from {ip}")
     await update.message.reply_text(f"✅ Unblocked: `{ip}`", parse_mode='Markdown')
 
@@ -700,7 +701,7 @@ async def panic_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("⚠️ Usage: /panic <your_ip>")
         return
-    ip = context.args[0]
+    ip = shlex.quote(context.args[0])
     await update.message.reply_text(f"🚨 PANIC MODE for {ip}...")
     cmds = ["ufw --force reset", "ufw default deny incoming", "ufw default allow outgoing", f"ufw allow from {ip} to any port 22", "ufw --force enable"]
     for cmd in cmds:
