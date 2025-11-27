@@ -1,13 +1,13 @@
 #!/bin/bash
 # ==============================================================================
 # BDRman - Server Management Panel
-# Version: 4.9.13
+# Version: 4.9.14
 # Author: Burak Darende
 # License: MIT
 # Description: Comprehensive server management tool for CapRover, Docker, and more.
 # ==============================================================================
 
-VERSION="4.9.13"
+VERSION="4.9.14"
 
 # ============= LIBRARY LOADING =============
 

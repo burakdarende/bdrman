@@ -520,13 +520,9 @@ backup_menu(){
     echo "3) Create Full System Snapshot"
     echo "4) List Local Backups"
     echo "5) Restore from Local"
-    echo "6) Setup Google Drive"
-    echo "7) Upload to Drive"
-    echo "8) List Drive Backups"
-    echo "9) Restore from Drive"
-    echo "10) Export Config (Config-as-Code)"
-    echo "11) Import Config"
-    read -rp "Select (0-11): " c
+    echo "6) Export Config (Config-as-Code)"
+    echo "7) Import Config"
+    read -rp "Select (0-7): " c
     case "$c" in
       0) break ;;
       1) backup_create "config"; pause ;;
@@ -534,12 +530,8 @@ backup_menu(){
       3) backup_create "full"; pause ;;
       4) backup_list; pause ;;
       5) backup_restore; pause ;;
-      6) backup_setup_drive; pause ;;
-      7) backup_upload_drive; pause ;;
-      8) backup_list_drive; pause ;;
-      9) backup_restore_drive; pause ;;
-      10) config_export; pause ;;
-      11) config_import; pause ;;
+      6) config_export; pause ;;
+      7) config_import; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
