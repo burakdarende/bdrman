@@ -149,6 +149,10 @@ touch /var/log/bdrman.log
 chmod 640 /var/log/bdrman.log
 
 # Setup Log Rotation
+if [ -f "$LIB_DEST/core.sh" ]; then
+  source "$LIB_DEST/core.sh"
+fi
+
 if [ -f "$LIB_DEST/system.sh" ]; then
   source "$LIB_DEST/system.sh"
   system_setup_logrotate
