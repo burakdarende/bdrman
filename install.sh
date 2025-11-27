@@ -70,8 +70,8 @@ mkdir -p /var/backups/bdrman
 # Install main script
 echo ""
 echo "⬇️  Installing BDRman..."
-if [ -f "bdrman.sh" ]; then
-  echo "📂 Found local bdrman.sh, using it..."
+if [ -f "bdrman.sh" ] && [ -d ".git" ]; then
+  echo "📂 Found local bdrman.sh (Git Repo), using it..."
   cp "bdrman.sh" "$DEST_DIR/bdrman"
 else
   echo "⬇️  Downloading bdrman.sh..."
@@ -81,8 +81,8 @@ chmod +x "$DEST_DIR/bdrman"
 
 # Install libraries
 echo "⬇️  Installing libraries..."
-if [ -d "lib" ]; then
-  echo "📂 Found local lib directory, copying..."
+if [ -d "lib" ] && [ -d ".git" ]; then
+  echo "📂 Found local lib directory (Git Repo), copying..."
   cp -r lib/* "$LIB_DEST/"
 else
   echo "⬇️  Downloading libraries..."
@@ -99,7 +99,8 @@ echo "⬇️  Installing Telegram Bot..."
 # Stop service if running to allow file update
 systemctl stop bdrman-telegram 2>/dev/null || true
 
-if [ -f "telegram_bot.py" ]; then
+if [ -f "telegram_bot.py" ] && [ -d ".git" ]; then
+  echo "📂 Found local telegram_bot.py (Git Repo), using it..."
   cp "telegram_bot.py" "$CONFIG_DIR/telegram_bot.py"
 else
   curl -s -f -L "$REPO_URL/telegram_bot.py?v=$(date +%s)" -o "$CONFIG_DIR/telegram_bot.py"
