@@ -327,6 +327,7 @@ backup_delete_local(){
   else
     error "File not found: $file"
   fi
+}
 
 
 # GPG encryption for backups
