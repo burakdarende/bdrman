@@ -507,7 +507,7 @@ async def vpn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Manage backups: create, list, upload, restore, delete
+    Manage backups: create, list, download, delete
     """
     if not check_auth(update): return
     
@@ -515,9 +515,9 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = (
             "📦 *Backup Management*\n\n"
             "`/backup create <type>` - Create backup (full/data/config)\n"
-            "`/backup list <local|drive>` - List backups\n"
-            "`/backup upload <file>` - Upload to Google Drive\n"
-            "`/backup restore <file> <source>` - Restore (source: local/drive)\n"
+            "`/backup list` - List local backups\n"
+            "`/backup download <file>` - Download backup file\n"
+            "`/backup restore <file>` - Restore from local backup\n"
             "`/backup delete <file>` - Delete local backup"
         )
         await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -535,42 +535,39 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Result:\n```\n{res}\n```", parse_mode='Markdown')
 
     elif action == "list":
-        target = "local"
-        if len(context.args) > 1:
-            target = context.args[1].lower()
-        
-        if target == "drive":
-            await update.message.reply_text("⏳ Fetching Drive file list...")
-            res = run_cmd("/usr/local/bin/bdrman backup list_drive", timeout=60)
-        else:
-            res = run_cmd("/usr/local/bin/bdrman backup list")
-            
-        await update.message.reply_text(f"📂 *{target.capitalize()} Backups:*\n```\n{res}\n```", parse_mode='Markdown')
+        res = run_cmd("/usr/local/bin/bdrman backup list")
+        await update.message.reply_text(f"📂 *Local Backups:*\n```\n{res}\n```", parse_mode='Markdown')
 
-    elif action == "upload":
+    elif action == "download":
         if len(context.args) < 2:
-            await update.message.reply_text("⚠️ Usage: `/backup upload <filename>`", parse_mode='Markdown')
+            await update.message.reply_text("⚠️ Usage: `/backup download <filename>`", parse_mode='Markdown')
             return
         filename = shlex.quote(context.args[1])
-        await update.message.reply_text(f"⏳ Uploading `{filename}` to Drive...", parse_mode='Markdown')
-        cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; backup_upload_drive {filename}'"
-        res = run_cmd(cmd, timeout=600)
-        await update.message.reply_text(f"☁️ Upload Result:\n```\n{res}\n```", parse_mode='Markdown')
+        filepath = f"/var/backups/bdrman/{filename}"
+        
+        # Security check: prevent path traversal
+        if ".." in filename or "/" in filename:
+             await update.message.reply_text("❌ Invalid filename", parse_mode='Markdown')
+             return
+
+        if not os.path.exists(filepath):
+            await update.message.reply_text(f"❌ File not found: `{filename}`", parse_mode='Markdown')
+            return
+
+        await update.message.reply_text(f"⏳ Sending `{filename}`...", parse_mode='Markdown')
+        try:
+            await update.message.reply_document(document=open(filepath, 'rb'), filename=filename)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Failed to send file: {str(e)}", parse_mode='Markdown')
 
     elif action == "restore":
-        if len(context.args) < 3:
-            await update.message.reply_text("⚠️ Usage: `/backup restore <filename> <local|drive>`", parse_mode='Markdown')
+        if len(context.args) < 2:
+            await update.message.reply_text("⚠️ Usage: `/backup restore <filename>`", parse_mode='Markdown')
             return
         filename = shlex.quote(context.args[1])
-        source = context.args[2].lower()
         
-        await update.message.reply_text(f"⚠️ Restoring `{filename}` from `{source}`. This might take a while...", parse_mode='Markdown')
-        
-        if source == "drive":
-             cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; echo yes | backup_restore_drive {filename}'"
-        else:
-             cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; echo -e \"{filename}\\nyes\" | backup_restore'"
-
+        await update.message.reply_text(f"⚠️ Restoring `{filename}`. This might take a while...", parse_mode='Markdown')
+        cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; echo -e \"{filename}\\nyes\" | backup_restore'"
         res = run_cmd(cmd, timeout=600)
         await update.message.reply_text(f"Result:\n```\n{res}\n```", parse_mode='Markdown')
 
@@ -584,7 +581,7 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🗑️ Result:\n```\n{res}\n```", parse_mode='Markdown')
 
     else:
-        await update.message.reply_text("❌ Unknown action. Use create, list, upload, restore, delete.")
+        await update.message.reply_text("❌ Unknown action. Use create, list, download, restore, delete.")
 
 async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
