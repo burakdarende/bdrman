@@ -37,7 +37,7 @@ fi
 
 # Install required dependencies
 echo "📦 Installing required dependencies..."
-REQUIRED_PACKAGES="curl wget tar rsync python3 python3-pip"
+REQUIRED_PACKAGES="curl wget tar rsync python3 python3-pip rclone"
 
 if command -v apt-get >/dev/null 2>&1; then
   apt-get install -y -qq $REQUIRED_PACKAGES

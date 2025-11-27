@@ -486,7 +486,6 @@ async def nginx_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     status = run_cmd("systemctl status nginx --no-pager -l")
     await update.message.reply_text(f"🌐 *Nginx*\n```\n{status}\n```", parse_mode='Markdown')
-
 async def reboot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     await update.message.reply_text("⚠️ Rebooting in 1 minute...")
@@ -507,10 +506,85 @@ async def vpn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"```\n{res}\n```", parse_mode='Markdown')
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Manage backups: create, list, upload, restore, delete
+    """
     if not check_auth(update): return
-    await update.message.reply_text("💾 Starting backup...")
-    subprocess.Popen(["/usr/local/bin/bdrman", "backup", "create"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    await update.message.reply_text("✅ Backup started")
+    
+    if not context.args:
+        help_text = (
+            "📦 *Backup Management*\n\n"
+            "`/backup create <type>` - Create backup (full/data/config)\n"
+            "`/backup list <local|drive>` - List backups\n"
+            "`/backup upload <file>` - Upload to Google Drive\n"
+            "`/backup restore <file> <source>` - Restore (source: local/drive)\n"
+            "`/backup delete <file>` - Delete local backup"
+        )
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+        return
+
+    action = context.args[0].lower()
+    
+    if action == "create":
+        if len(context.args) < 2:
+            await update.message.reply_text("⚠️ Usage: `/backup create <full|data|config>`", parse_mode='Markdown')
+            return
+        b_type = shlex.quote(context.args[1])
+        await update.message.reply_text(f"⏳ Creating `{b_type}` backup...")
+        res = run_cmd(f"/usr/local/bin/bdrman backup create {b_type}", timeout=300)
+        await update.message.reply_text(f"✅ Result:\n```\n{res}\n```", parse_mode='Markdown')
+
+    elif action == "list":
+        target = "local"
+        if len(context.args) > 1:
+            target = context.args[1].lower()
+        
+        if target == "drive":
+            await update.message.reply_text("⏳ Fetching Drive file list...")
+            res = run_cmd("/usr/local/bin/bdrman backup list_drive", timeout=60)
+        else:
+            res = run_cmd("/usr/local/bin/bdrman backup list")
+            
+        await update.message.reply_text(f"📂 *{target.capitalize()} Backups:*\n```\n{res}\n```", parse_mode='Markdown')
+
+    elif action == "upload":
+        if len(context.args) < 2:
+            await update.message.reply_text("⚠️ Usage: `/backup upload <filename>`", parse_mode='Markdown')
+            return
+        filename = shlex.quote(context.args[1])
+        await update.message.reply_text(f"⏳ Uploading `{filename}` to Drive...", parse_mode='Markdown')
+        cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; backup_upload_drive {filename}'"
+        res = run_cmd(cmd, timeout=600)
+        await update.message.reply_text(f"☁️ Upload Result:\n```\n{res}\n```", parse_mode='Markdown')
+
+    elif action == "restore":
+        if len(context.args) < 3:
+            await update.message.reply_text("⚠️ Usage: `/backup restore <filename> <local|drive>`", parse_mode='Markdown')
+            return
+        filename = shlex.quote(context.args[1])
+        source = context.args[2].lower()
+        
+        await update.message.reply_text(f"⚠️ Restoring `{filename}` from `{source}`. This might take a while...", parse_mode='Markdown')
+        
+        if source == "drive":
+             cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; echo yes | backup_restore_drive {filename}'"
+        else:
+             cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; echo -e \"{filename}\\nyes\" | backup_restore'"
+
+        res = run_cmd(cmd, timeout=600)
+        await update.message.reply_text(f"Result:\n```\n{res}\n```", parse_mode='Markdown')
+
+    elif action == "delete":
+        if len(context.args) < 2:
+            await update.message.reply_text("⚠️ Usage: `/backup delete <filename>`", parse_mode='Markdown')
+            return
+        filename = shlex.quote(context.args[1])
+        cmd = f"bash -c 'source /usr/local/lib/bdrman/backup.sh; BACKUP_DIR=/var/backups/bdrman; backup_delete_local {filename}'"
+        res = run_cmd(cmd)
+        await update.message.reply_text(f"🗑️ Result:\n```\n{res}\n```", parse_mode='Markdown')
+
+    else:
+        await update.message.reply_text("❌ Unknown action. Use create, list, upload, restore, delete.")
 
 async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -521,17 +595,12 @@ async def update_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def updatebdr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
     
-    # Check if user confirmed
     if not context.args or context.args[0] != 'confirm':
         current_version = VERSION
         msg = (
             f"🔄 *BDRman Update*\n\n"
             f"📌 Current: `v{current_version}`\n"
             f"📥 Will update to latest from GitHub\n\n"
-            f"✅ *Preserved:*\n"
-            f"  • Telegram config\n"
-            f"  • All backups\n"
-            f"  • Custom settings\n\n"
             f"⚠️ *Bot will restart*\n\n"
             f"To confirm, send:\n"
             f"`/updatebdr confirm`"
@@ -539,106 +608,25 @@ async def updatebdr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='Markdown')
         return
     
-    # User confirmed, proceed with update
-    await update.message.reply_text(
-        "🔄 *Starting Update...*\n\n"
-        "This will take 5-15 seconds.\n"
-        "I'll notify you when ready!",
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("🔄 *Starting Update...*", parse_mode='Markdown')
     
-    # Create update script that will notify after completion
     update_script = f"""#!/bin/bash
-# BDRman Update Script
 exec > /tmp/bdrman_update.log 2>&1
 cd /tmp
-
 echo "Starting update process..."
 sleep 2
-
-# Stop bot service first (so files can be updated)
-echo "Stopping bot service..."
 systemctl stop bdrman-telegram
-
-# Download latest installer
-echo "Downloading installer..."
 curl -s https://raw.githubusercontent.com/burakdarende/bdrman/main/install.sh -o bdrman_update.sh
-
-# Run update (auto-confirm)
-echo "Running installer..."
 echo "yes" | bash bdrman_update.sh
-
-# Force restart bot service
-echo "Restarting bot service..."
 systemctl daemon-reload
 systemctl restart bdrman-telegram
-
-# Wait for bot to be fully ready (max 30 seconds)
-echo "Waiting for bot to start..."
-for i in {{1..30}}; do
-  if systemctl is-active --quiet bdrman-telegram; then
-    # Bot service is active, wait a bit more for initialization
-    sleep 3
-    echo "Bot is active, checking if responsive..."
-    
-    # Check if bot process is actually running
-    if pgrep -f "python.*telegram_bot.py" > /dev/null; then
-      echo "Bot process found, ready to send notification"
-      break
-    fi
-  fi
-  sleep 1
-done
-
-# Get new version
-NEW_VERSION=$(grep 'VERSION=' /usr/local/bin/bdrman | head -1 | cut -d'=' -f2 | tr -d '"')
-
-# Send success notification
-BOT_TOKEN=$(grep BOT_TOKEN /etc/bdrman/telegram.conf | cut -d'=' -f2 | tr -d '"')
-CHAT_ID=$(grep CHAT_ID /etc/bdrman/telegram.conf | cut -d'=' -f2 | tr -d '"')
-HOSTNAME=$(hostname)
-
-MESSAGE="✅ *BDRman Update Complete*%0A%0A🤖 Version: $NEW_VERSION%0A💻 Server: $HOSTNAME%0A⏰ $(date '+%Y-%m-%d %H:%M:%S')%0A%0ABot is ready! Send /start"
-
-# Try sending notification 3 times
-for attempt in {{1..3}}; do
-  echo "Sending notification (attempt $attempt)..."
-  RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \\
-    -d "chat_id=$CHAT_ID" \\
-    -d "text=$MESSAGE" \\
-    -d "parse_mode=Markdown")
-  
-  if echo "$RESPONSE" | grep -q '"ok":true'; then
-    echo "Notification sent successfully!"
-    break
-  else
-    echo "Failed to send notification, retrying..."
-    sleep 2
-  fi
-done
-
-# Cleanup
-rm -f /tmp/bdrman_update.sh /tmp/bdrman_updater.sh /tmp/bdrman_update.log
 """
-    
-    # Write and execute update script
     with open('/tmp/bdrman_updater.sh', 'w') as f:
         f.write(update_script)
-    
     run_cmd("chmod +x /tmp/bdrman_updater.sh")
+    subprocess.Popen(["setsid", "/bin/bash", "/tmp/bdrman_updater.sh"], start_new_session=True)
     
-    # Run in background using setsid to detach from parent process
-    subprocess.Popen(["setsid", "/bin/bash", "/tmp/bdrman_updater.sh"], 
-                     stdout=subprocess.DEVNULL, 
-                     stderr=subprocess.DEVNULL,
-                     start_new_session=True)
-    
-    await update.message.reply_text(
-        "⏳ *Update in progress...*\n\n"
-        "I'll send you a message when ready!\n"
-        "(Usually takes 5-15 seconds)",
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("⏳ *Update in progress...*", parse_mode='Markdown')
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -649,15 +637,12 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "exported_at": datetime.now().isoformat(),
             "server": SERVER_NAME,
             "bdrman_version": VERSION,
-            "telegram": {"chat_id": CHAT_ID, "pin": PIN_CODE},
+            "telegram": {"chat_id": CHAT_ID},
             "firewall": run_cmd("ufw status numbered | tail -n +5"),
             "services": {
                 "docker": run_cmd("systemctl is-active docker"),
                 "nginx": run_cmd("systemctl is-active nginx")
-            },
-            "network": {"ip": run_cmd("hostname -I | awk '{print $1}'")},
-            "cron": run_cmd("crontab -l 2>/dev/null || echo 'None'"),
-            "containers": run_cmd("docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}'")
+            }
         }
         config_file = f"/tmp/bdrman_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(config_file, 'w') as f:
@@ -665,7 +650,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_document(
             document=open(config_file, 'rb'),
             filename=f"bdrman_{SERVER_NAME}.json",
-            caption="📋 Config Export\n⚠️ Keep secure!"
+            caption="📋 Config Export"
         )
         run_cmd(f"rm {config_file}")
     except Exception as e:
@@ -673,10 +658,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def import_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
-    await update.message.reply_text(
-        "📥 *Import*\n\nSend JSON file to import\n⚠️ Coming soon!",
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text("📥 *Import*\n\nSend JSON file to import\n⚠️ Coming soon!", parse_mode='Markdown')
 
 async def block_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_auth(update): return
@@ -823,54 +805,6 @@ def main():
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN missing")
         sys.exit(1)
-    
-    # Register commands
-    register_command("start", "Start bot", "📌 General")
-    register_command("help", "Show all commands", "📌 General")
-    register_command("version", "Version info", "📌 General")
-    register_command("status", "System status + colored logs", "📊 Monitoring")
-    register_command("health", "Health check", "📊 Monitoring")
-    register_command("alerts", "Active alerts", "📊 Monitoring")
-    register_command("top", "Top CPU processes", "📊 Monitoring")
-    register_command("mem", "Memory usage", "📊 Monitoring")
-    register_command("disk", "Disk usage", "📊 Monitoring")
-    register_command("uptime", "System uptime", "📊 Monitoring")
-    register_command("users", "Logged users", "📊 Monitoring")
-    register_command("last", "Last logins", "📊 Monitoring")
-    register_command("docker", "List containers", "🐳 Docker")
-    register_command("logs", "Container logs", "🐳 Docker")
-    register_command("restart", "Restart container", "🐳 Docker")
-    register_command("network", "Network stats", "🌐 Network")
-    register_command("ports", "Listening ports", "🌐 Network")
-    register_command("ping", "Ping host", "🌐 Network")
-    register_command("dns", "DNS lookup", "🌐 Network")
-    register_command("speedtest", "Internet speed", "🌐 Network")
-    register_command("ssl", "Check SSL cert", "🔒 SSL")
-    register_command("cert", "List certificates", "🔒 SSL")
-    register_command("firewall", "Firewall status", "🛡️ Security")
-    register_command("block", "Block IP", "🛡️ Security")
-    register_command("unblock", "Unblock IP", "🛡️ Security")
-    register_command("panic", "Panic mode", "🛡️ Security")
-    register_command("unpanic", "Exit panic", "🛡️ Security")
-    register_command("vpn", "Create VPN user", "🔧 Management")
-    register_command("backup", "Create backup", "🔧 Management")
-    register_command("update", "Update system packages", "🔧 Management")
-    register_command("updatebdr", "Update BDRman itself", "🔧 Management")
-    register_command("export", "Export config as JSON", "🔧 Management")
-    register_command("import", "Import config (soon)", "🔧 Management")
-    register_command("services", "Service status overview", "🔧 Management")
-    register_command("running", "All running services", "🔧 Management")
-    register_command("nginx", "Nginx status", "🔧 Management")
-    register_command("kernel", "Kernel info", "🔧 Management")
-    register_command("reboot", "Reboot server", "🔧 Management")
-    register_command("users", "Logged users", "📊 Monitoring")
-    register_command("last", "Last logins", "📊 Monitoring")
-    register_command("snapshot", "Snapshot (PIN)", "🚨 Critical")
-    register_command("capstatus", "CapRover status", "🚢 CapRover")
-    register_command("capapps", "List CapRover apps", "🚢 CapRover")
-    register_command("caplogs", "App logs", "🚢 CapRover")
-    register_command("caprestart", "Restart app/core", "🚢 CapRover")
-    register_command("capinfo", "CapRover info", "🚢 CapRover")
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     

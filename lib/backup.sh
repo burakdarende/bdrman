@@ -206,6 +206,129 @@ backup_remote(){
   fi
 }
 
+# ============= GOOGLE DRIVE (RCLONE) =============
+
+backup_setup_drive(){
+  echo "=== GOOGLE DRIVE SETUP (RCLONE) ==="
+  
+  if ! command_exists rclone; then
+    echo "Installing rclone..."
+    apt update && apt install -y rclone
+  fi
+  
+  echo "Configuring 'gdrive' remote..."
+  echo "⚠️  You will need to follow the interactive steps."
+  echo "   Name the remote: gdrive"
+  echo "   Storage type: drive"
+  
+  rclone config
+  
+  if rclone listremotes | grep -q "gdrive:"; then
+    success "Google Drive configured successfully!"
+    log_success "Google Drive (rclone) configured"
+  else
+    error "Google Drive configuration failed or cancelled."
+  fi
+}
+
+backup_upload_drive(){
+  local file="$1"
+  
+  if [ -z "$file" ]; then
+    backup_list
+    read -rp "Backup file to upload: " file
+  fi
+  
+  file=$(basename "$file")
+  LOCAL_FILE="$BACKUP_DIR/$file"
+  
+  if [ ! -f "$LOCAL_FILE" ]; then
+    error "File not found: $LOCAL_FILE"
+    return 1
+  fi
+  
+  if ! rclone listremotes | grep -q "gdrive:"; then
+    error "Google Drive not configured. Run setup first."
+    return 1
+  fi
+  
+  info "Uploading $file to Google Drive..."
+  
+  # Upload to 'bdrman-backups' folder
+  if rclone copy "$LOCAL_FILE" "gdrive:bdrman-backups" --progress; then
+    success "Uploaded: $file"
+    log_success "Uploaded to Drive: $file"
+  else
+    error "Upload failed!"
+    log_error "Drive upload failed: $file"
+    return 1
+  fi
+}
+
+backup_list_drive(){
+  echo "=== GOOGLE DRIVE BACKUPS ==="
+  
+  if ! rclone listremotes | grep -q "gdrive:"; then
+    echo "❌ Google Drive not configured."
+    return 1
+  fi
+  
+  rclone lsl "gdrive:bdrman-backups" || echo "No backups found or connection failed."
+}
+
+backup_restore_drive(){
+  local file="$1"
+  
+  if [ -z "$file" ]; then
+    backup_list_drive
+    echo ""
+    read -rp "Filename to restore from Drive: " file
+  fi
+  
+  if [ -z "$file" ]; then return; fi
+  
+  info "Downloading $file from Drive..."
+  
+  if rclone copy "gdrive:bdrman-backups/$file" "$BACKUP_DIR" --progress; then
+    success "Downloaded to $BACKUP_DIR/$file"
+    
+    # Ask to restore immediately
+    read -rp "Restore this backup now? (y/n): " confirm
+    if [[ "$confirm" =~ [Yy] ]]; then
+      # Call existing restore logic (we need to mock input or refactor restore)
+      # Simpler: just set the variable and call restore logic manually or refactor backup_restore to accept arg
+      
+      RESTORE_FILE="$BACKUP_DIR/$file"
+      echo "Restoring $RESTORE_FILE..."
+      tar -xzf "$RESTORE_FILE" -C / && echo "✅ Restore completed!" || echo "❌ Restore failed!"
+      log "Restored from Drive: $file"
+    fi
+  else
+    error "Download failed. Check filename."
+    return 1
+  fi
+}
+
+backup_delete_local(){
+  local file="$1"
+  
+  if [ -z "$file" ]; then
+    backup_list
+    read -rp "File to delete: " file
+  fi
+  
+  file=$(basename "$file")
+  LOCAL_FILE="$BACKUP_DIR/$file"
+  
+  if [ -f "$LOCAL_FILE" ]; then
+    rm "$LOCAL_FILE"
+    success "Deleted: $file"
+    log "Deleted local backup: $file"
+  else
+    error "File not found: $file"
+  fi
+
+
 # GPG encryption for backups
 backup_encrypt(){
   if [ ! -f "$1" ]; then
@@ -649,11 +772,15 @@ backup_menu(){
     echo "1) Create Config Backup"
     echo "2) Create Data Backup"
     echo "3) Create Full System Snapshot"
-    echo "4) List Backups"
-    echo "5) Restore from Backup"
-    echo "6) Export Config (Config-as-Code)"
-    echo "7) Import Config"
-    read -rp "Select (0-7): " c
+    echo "4) List Local Backups"
+    echo "5) Restore from Local"
+    echo "6) Setup Google Drive"
+    echo "7) Upload to Drive"
+    echo "8) List Drive Backups"
+    echo "9) Restore from Drive"
+    echo "10) Export Config (Config-as-Code)"
+    echo "11) Import Config"
+    read -rp "Select (0-11): " c
     case "$c" in
       0) break ;;
       1) backup_create "config"; pause ;;
@@ -661,8 +788,12 @@ backup_menu(){
       3) backup_create "full"; pause ;;
       4) backup_list; pause ;;
       5) backup_restore; pause ;;
-      6) config_export; pause ;;
-      7) config_import; pause ;;
+      6) backup_setup_drive; pause ;;
+      7) backup_upload_drive; pause ;;
+      8) backup_list_drive; pause ;;
+      9) backup_restore_drive; pause ;;
+      10) config_export; pause ;;
+      11) config_import; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
