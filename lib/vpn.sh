@@ -39,11 +39,11 @@ vpn_add_client(){
     qrencode -t PNG -o "$PNG_FILE" < "$LATEST_CONF"
     
     # Check for transfer.sh or similar for uploading
-    # Using 0x0.st as it's reliable for CLI
+    # Using 0x0.st with custom UA to avoid blocking
     echo "📤 Uploading QR code for remote access..."
-    QR_LINK=$(curl -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+    QR_LINK=$(curl -s -H "User-Agent: Mozilla/5.0" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
     
-    if [ -n "$QR_LINK" ]; then
+    if [ -n "$QR_LINK" ] && [[ "$QR_LINK" != *"User agent"* ]]; then
       echo "✅ QR Code Link: $QR_LINK"
       echo "   (Open this link on your phone to scan)"
     fi
@@ -63,9 +63,32 @@ vpn_list_conf(){
 
 vpn_show_qr(){
   echo "=== SHOW QR CODE ==="
-  vpn_list_conf
-  echo ""
-  read -rp "Enter client name: " client_name
+  
+  # Create array of config files
+  mapfile -t CONFS < <(ls -1 *.conf 2>/dev/null | sed 's/\.conf$//')
+  
+  if [ ${#CONFS[@]} -eq 0 ]; then
+    echo "❌ No VPN clients found."
+    return
+  fi
+  
+  # Display numbered list
+  echo "Select a client:"
+  for i in "${!CONFS[@]}"; do
+    echo "$((i+1))) ${CONFS[$i]}"
+  done
+  
+  read -rp "Select (1-${#CONFS[@]}): " num
+  
+  # Validate input
+  if [[ ! "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "${#CONFS[@]}" ]; then
+    echo "❌ Invalid selection."
+    return
+  fi
+  
+  # Get selected client name
+  client_name="${CONFS[$((num-1))]}"
+  echo "Selected: $client_name"
   
   CONF_FILE="${client_name}.conf"
   PNG_FILE="${client_name}.png"
@@ -82,7 +105,7 @@ vpn_show_qr(){
         qrencode -t PNG -o "$PNG_FILE" < "$CONF_FILE"
       fi
       echo "Uploading..."
-      LINK=$(curl -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+      LINK=$(curl -s -H "User-Agent: Mozilla/5.0" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
       echo "✅ Link: $LINK"
     fi
   else
