@@ -281,6 +281,32 @@ telegram_test_report(){
   echo "✅ Report sent! Check your Telegram"
 }
 
+telegram_send_photo(){
+  local file="$1"
+  local caption="$2"
+  
+  if [ ! -f /etc/bdrman/telegram.conf ]; then
+    echo "⚠️  Telegram not configured. Cannot send photo."
+    return 1
+  fi
+  
+  source /etc/bdrman/telegram.conf
+  
+  if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+    echo "⚠️  Telegram config missing token or chat_id."
+    return 1
+  fi
+  
+  echo "📤 Sending to Telegram..."
+  curl -s -F chat_id="$CHAT_ID" -F photo="@$file" -F caption="$caption" "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto" >/dev/null
+  
+  if [ $? -eq 0 ]; then
+    echo "✅ Photo sent to Telegram!"
+  else
+    echo "❌ Failed to send photo to Telegram."
+  fi
+}
+
 telegram_bot_webhook(){
   echo "=== TELEGRAM BOT WEBHOOK SERVER ==="
   echo ""

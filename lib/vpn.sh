@@ -38,22 +38,8 @@ vpn_add_client(){
     echo "⚙️  Generating QR Code for $CLIENT_NAME..."
     qrencode -t PNG -o "$PNG_FILE" < "$LATEST_CONF"
     
-    # Check for transfer.sh or similar for uploading
-    # Try 0x0.st first
-    echo "📤 Uploading QR code..."
-    UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    QR_LINK=$(curl -s -H "User-Agent: $UA" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
-    
-    # Fallback to transfer.sh if 0x0.st fails or blocks
-    if [ -z "$QR_LINK" ] || [[ "$QR_LINK" == *"User agent"* ]]; then
-      echo "⚠️  0x0.st failed, trying transfer.sh..."
-      QR_LINK=$(curl -s --upload-file "$PNG_FILE" "https://transfer.sh/$PNG_FILE")
-    fi
-
-    if [ -n "$QR_LINK" ]; then
-      echo "✅ QR Code Link: $QR_LINK"
-      echo "   (Open this link on your phone to scan)"
-    fi
+    # Send to Telegram instead of uploading
+    telegram_send_photo "$PNG_FILE" "VPN Access QR Code: $CLIENT_NAME"
     
     # Also show ASCII for convenience
     echo "📱 Scanning QR in terminal:"
@@ -102,7 +88,7 @@ vpn_show_qr(){
   
   if [ -f "$CONF_FILE" ]; then
     echo "1) ASCII (Terminal)"
-    echo "2) PNG Link (Upload)"
+    echo "2) Send to Telegram"
     read -rp "Select format (1/2): " fmt
     
     if [ "$fmt" == "1" ]; then
@@ -111,17 +97,7 @@ vpn_show_qr(){
       if [ ! -f "$PNG_FILE" ]; then
         qrencode -t PNG -o "$PNG_FILE" < "$CONF_FILE"
       fi
-      echo "Uploading..."
-      UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      LINK=$(curl -s -H "User-Agent: $UA" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
-      
-      # Fallback
-      if [ -z "$LINK" ] || [[ "$LINK" == *"User agent"* ]]; then
-        echo "⚠️  0x0.st failed, trying transfer.sh..."
-        LINK=$(curl -s --upload-file "$PNG_FILE" "https://transfer.sh/$PNG_FILE")
-      fi
-      
-      echo "✅ Link: $LINK"
+      telegram_send_photo "$PNG_FILE" "VPN Access QR Code: $client_name"
     fi
   else
     echo "❌ Config file not found: $CONF_FILE"
