@@ -1064,7 +1064,8 @@ def main():
             VPN_SELECT_QR: [MessageHandler(filters.TEXT & ~filters.COMMAND, vpn_qr_handler)],
             VPN_SELECT_DELETE: [MessageHandler(filters.TEXT & ~filters.COMMAND, vpn_delete_handler)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True
     )
     app.add_handler(vpn_conv)
     
