@@ -39,11 +39,18 @@ vpn_add_client(){
     qrencode -t PNG -o "$PNG_FILE" < "$LATEST_CONF"
     
     # Check for transfer.sh or similar for uploading
-    # Using 0x0.st with custom UA to avoid blocking
-    echo "📤 Uploading QR code for remote access..."
-    QR_LINK=$(curl -s -H "User-Agent: Mozilla/5.0" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+    # Try 0x0.st first
+    echo "📤 Uploading QR code..."
+    UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    QR_LINK=$(curl -s -H "User-Agent: $UA" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
     
-    if [ -n "$QR_LINK" ] && [[ "$QR_LINK" != *"User agent"* ]]; then
+    # Fallback to transfer.sh if 0x0.st fails or blocks
+    if [ -z "$QR_LINK" ] || [[ "$QR_LINK" == *"User agent"* ]]; then
+      echo "⚠️  0x0.st failed, trying transfer.sh..."
+      QR_LINK=$(curl -s --upload-file "$PNG_FILE" "https://transfer.sh/$PNG_FILE")
+    fi
+
+    if [ -n "$QR_LINK" ]; then
       echo "✅ QR Code Link: $QR_LINK"
       echo "   (Open this link on your phone to scan)"
     fi
@@ -105,7 +112,15 @@ vpn_show_qr(){
         qrencode -t PNG -o "$PNG_FILE" < "$CONF_FILE"
       fi
       echo "Uploading..."
-      LINK=$(curl -s -H "User-Agent: Mozilla/5.0" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+      UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      LINK=$(curl -s -H "User-Agent: $UA" -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+      
+      # Fallback
+      if [ -z "$LINK" ] || [[ "$LINK" == *"User agent"* ]]; then
+        echo "⚠️  0x0.st failed, trying transfer.sh..."
+        LINK=$(curl -s --upload-file "$PNG_FILE" "https://transfer.sh/$PNG_FILE")
+      fi
+      
       echo "✅ Link: $LINK"
     fi
   else
