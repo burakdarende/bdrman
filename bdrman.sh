@@ -7,7 +7,7 @@
 # Description: Comprehensive server management tool for CapRover, Docker, and more.
 # ==============================================================================
 
-VERSION="4.9.18"
+VERSION="4.9.19"
 
 # ============= LIBRARY LOADING =============
 

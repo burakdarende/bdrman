@@ -4,8 +4,28 @@
 
 set -e
 
+# Download URLs
+REPO_URL="https://raw.githubusercontent.com/burakdarende/bdrman/main"
+DEST_DIR="/usr/local/bin"
+LIB_DEST="/usr/local/lib/bdrman"
+CONFIG_DIR="/etc/bdrman"
+
+# Determine Version
+VERSION="Latest"
+if [ -f "bdrman.sh" ]; then
+  # Local file
+  VERSION=$(grep '^VERSION=' bdrman.sh | cut -d'"' -f2)
+else
+  # Remote file (fast check)
+  # Try to fetch version line only
+  REMOTE_VER=$(curl -s "$REPO_URL/bdrman.sh" | grep '^VERSION=' | cut -d'"' -f2 || true)
+  if [ -n "$REMOTE_VER" ]; then
+    VERSION="$REMOTE_VER"
+  fi
+fi
+
 echo "========================================="
-echo "   BDRman v4.9.16 - Automatic Installer"
+echo "   BDRman v$VERSION - Automatic Installer"
 echo "========================================="
 echo ""
 
@@ -55,11 +75,7 @@ elif command -v yum >/dev/null 2>&1; then
   yum install -y -q docker jq sqlite wireguard-tools 2>/dev/null || echo "⚠️  Some optional packages skipped"
 fi
 
-# Download URLs
-REPO_URL="https://raw.githubusercontent.com/burakdarende/bdrman/main"
-DEST_DIR="/usr/local/bin"
-LIB_DEST="/usr/local/lib/bdrman"
-CONFIG_DIR="/etc/bdrman"
+
 
 # Create directories
 mkdir -p "$CONFIG_DIR"
