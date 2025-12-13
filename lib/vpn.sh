@@ -39,7 +39,8 @@ vpn_add_client(){
     qrencode -t PNG -o "$PNG_FILE" < "$LATEST_CONF"
     
     # Send to Telegram instead of uploading
-    telegram_send_photo "$PNG_FILE" "VPN Access QR Code: $CLIENT_NAME"
+    # telegram_send_photo "$PNG_FILE" "VPN Access QR Code: $CLIENT_NAME"
+    # User requested to disable auto-send. Only generate files.
     
     # Also show ASCII for convenience
     echo "📱 Scanning QR in terminal:"

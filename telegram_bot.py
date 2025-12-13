@@ -505,41 +505,157 @@ async def reboot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     run_cmd("shutdown -r +1")
     await update.message.reply_text("✅ Reboot scheduled")
 
-async def vpn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_auth(update): return
-    if not context.args:
-        await update.message.reply_text("Usage: /vpn <username>")
-        return
-    user = shlex.quote(context.args[0])
-    if not user.isalnum():
-        await update.message.reply_text("❌ Alphanumeric only")
-        return
-    await update.message.reply_text(f"🔐 Creating VPN: `{user}`...")
-    res = run_cmd(f"echo '{user}' | /usr/local/bin/bdrman vpn add", timeout=60)
-    await update.message.reply_text(f"```\n{res}\n```", parse_mode='Markdown')
+# VPN Conversation
+VPN_MENU, VPN_ADD_NAME, VPN_SELECT_QR, VPN_SELECT_DELETE = range(4)
 
-    # Try to send generated files (PNG and Conf)
-    # Check common locations (cwd and /root)
-    files_to_check = [
-        f"{user}.png",
-        f"/root/{user}.png",
-        f"{user}.conf", 
-        f"/root/{user}.conf"
-    ]
+async def vpn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_auth(update): return ConversationHandler.END
     
-    sent_files = set()
-    for fpath in files_to_check:
-        if os.path.exists(fpath) and fpath not in sent_files:
+    # Check if user provided an argument (quick command)
+    if context.args:
+        # Backward compatibility for /vpn <username>
+        # Just delegate to vpn_quick_add logic or show error
+        # For now, let's keep it simple and force menu or handle basic add
+        username = context.args[0]
+        if username.isalnum():
+             await update.message.reply_text(f"🔐 Creating VPN: `{username}`...")
+             res = run_cmd(f"echo '{username}' | /usr/local/bin/bdrman vpn add", timeout=60)
+             await update.message.reply_text(f"```\n{res}\n```", parse_mode='Markdown')
+             # Send QR auto
+             files_to_check = [f"{username}.png", f"/root/{username}.png", f"{username}.conf", f"/root/{username}.conf"]
+             for fpath in files_to_check:
+                 if os.path.exists(fpath):
+                     try:
+                         if fpath.endswith('.png'): await update.message.reply_photo(photo=open(fpath, 'rb'))
+                         elif fpath.endswith('.conf'): await update.message.reply_document(document=open(fpath, 'rb'))
+                     except: pass
+             return ConversationHandler.END
+    
+    msg = (
+        "🔐 *VPN Management*\n\n"
+        "1️⃣ List Clients\n"
+        "2️⃣ Add New Client\n"
+        "3️⃣ Get QR Code\n"
+        "4️⃣ Delete Client\n"
+        "0️⃣ Cancel\n\n"
+        "Reply with choice number:"
+    )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+    return VPN_MENU
+
+async def vpn_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    choice = update.message.text.strip()
+    
+    if choice == "1":
+        # List
+        files = run_cmd("ls -1 *.conf /root/*.conf 2>/dev/null | xargs -n1 basename | sed 's/.conf$//' | sort | uniq")
+        if not files: files = "No clients found."
+        await update.message.reply_text(f"👥 *VPN Clients:*\n```\n{files}\n```", parse_mode='Markdown')
+        return ConversationHandler.END
+        
+    elif choice == "2":
+        await update.message.reply_text("👤 Enter new client name (alphanumeric only):")
+        return VPN_ADD_NAME
+        
+    elif choice == "3":
+        # QR Code
+        files = run_cmd("ls -1 *.conf /root/*.conf 2>/dev/null | xargs -n1 basename | sed 's/.conf$//' | sort | uniq")
+        if not files:
+            await update.message.reply_text("❌ No clients found.")
+            return ConversationHandler.END
+        await update.message.reply_text(f"👥 *Select Client for QR:*\n```\n{files}\n```\nReply with client name:", parse_mode='Markdown')
+        return VPN_SELECT_QR
+        
+    elif choice == "4":
+        # Delete
+        files = run_cmd("ls -1 *.conf /root/*.conf 2>/dev/null | xargs -n1 basename | sed 's/.conf$//' | sort | uniq")
+        if not files:
+            await update.message.reply_text("❌ No clients found.")
+            return ConversationHandler.END
+        await update.message.reply_text(f"🗑️ *Select Client to DELETE:*\n```\n{files}\n```\nReply with client name:", parse_mode='Markdown')
+        return VPN_SELECT_DELETE
+
+    elif choice == "0":
+        await update.message.reply_text("🚫 Cancelled.")
+        return ConversationHandler.END
+        
+    else:
+        await update.message.reply_text("❌ Invalid choice. Reply 1-4 or 0.")
+        return VPN_MENU
+
+async def vpn_add_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if not name.isalnum():
+        await update.message.reply_text("❌ Invalid name. Alphanumeric only. Try again or /cancel.")
+        return VPN_ADD_NAME
+        
+    await update.message.reply_text(f"⚙️ Creating `{name}`... Please wait.")
+    # Run the add command
+    res = run_cmd(f"echo '{name}' | /usr/local/bin/bdrman vpn add", timeout=60)
+    await update.message.reply_text(f"Result:\n```\n{res}\n```", parse_mode='Markdown')
+    
+    # Auto-send QR for newly created (users usually want this immediately)
+    files = [f"{name}.png", f"/root/{name}.png", f"{name}.conf", f"/root/{name}.conf"]
+    sent = False
+    for f in files:
+        if os.path.exists(f):
             try:
-                if fpath.endswith('.png'):
-                    await update.message.reply_photo(photo=open(fpath, 'rb'), caption=f"📱 QR Code: {user}")
-                elif fpath.endswith('.conf'):
-                    await update.message.reply_document(document=open(fpath, 'rb'), filename=os.path.basename(fpath), caption="📄 Config File")
-                sent_files.add(fpath)
-                # Avoid sending duplicates if paths resolve to same file
-                # (Simple set check of path string is basic, but sufficient for typical setup)
+                if f.endswith('.png'): 
+                    await update.message.reply_photo(photo=open(f, 'rb'), caption=f"📱 `{name}`")
+                    sent = True
+                elif f.endswith('.conf'):
+                    await update.message.reply_document(document=open(f, 'rb'))
             except Exception as e:
-                logger.error(f"Failed to send file {fpath}: {e}")
+                logger.error(f"Send failed: {e}")
+                
+    if not sent:
+        await update.message.reply_text("⚠️ QR/Config file not found. Check logs.")
+        
+    return ConversationHandler.END
+
+async def vpn_qr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    # Basic validation
+    if not name.replace('_','').replace('-','').isalnum():
+         await update.message.reply_text("❌ Invalid name format.")
+         return ConversationHandler.END
+         
+    files = [f"{name}.png", f"/root/{name}.png", f"{name}.conf", f"/root/{name}.conf"]
+    found = False
+    for f in files:
+        if os.path.exists(f):
+            found = True
+            try:
+                if f.endswith('.png'): await update.message.reply_photo(photo=open(f, 'rb'), caption=f"📱 `{name}`")
+                elif f.endswith('.conf'): await update.message.reply_document(document=open(f, 'rb'))
+            except: pass
+            
+    if not found:
+        # Try to regen if conf exists but png missing
+        # Not implementing complex regen logic here yet, just report not found
+        await update.message.reply_text(f"❌ Files for `{name}` not found.", parse_mode='Markdown')
+        
+    return ConversationHandler.END
+
+async def vpn_delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if not name.replace('_','').replace('-','').isalnum():
+         await update.message.reply_text("❌ Invalid name format.")
+         return ConversationHandler.END
+
+    await update.message.reply_text(f"🗑️ Deleting `{name}`...")
+    # The wireguard script usually requires selecting a number to delete, which is hard to automate blindly.
+    # However, standard wireguard-install.sh often supports "headless" if we know the logic?
+    # Actually, angristan's script is interactive. 
+    # Automating deletion is risky/hard without a dedicated tool flag.
+    # BUT, we can try to just remove the keys and reload? No, that breaks the script state.
+    # For now, let's just return a message saying manual deletion required, OR 
+    # if we assume standard wg-quick:
+    # `wg set wg0 peer <PUBKEY> remove` ?
+    # Let's check permissions.
+    
+    await update.message.reply_text("⚠️ Automatic deletion via bot is not fully supported yet due to interactive script limitations.\nPlease use `bdrman vpn` in terminal for deletion.", parse_mode='Markdown')
+    return ConversationHandler.END
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -910,7 +1026,7 @@ def main():
     app.add_handler(CommandHandler("unblock", unblock_cmd))
     app.add_handler(CommandHandler("panic", panic_cmd))
     app.add_handler(CommandHandler("unpanic", unpanic_cmd))
-    app.add_handler(CommandHandler("vpn", vpn_cmd))
+    # app.add_handler(CommandHandler("vpn", vpn_cmd)) # Replaced by conversation
     app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("update", update_cmd))
     app.add_handler(CommandHandler("updatebdr", updatebdr_cmd))
@@ -938,6 +1054,19 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     )
     app.add_handler(conv)
+    
+    # VPN Conversation
+    vpn_conv = ConversationHandler(
+        entry_points=[CommandHandler("vpn", vpn_start)],
+        states={
+            VPN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, vpn_menu_handler)],
+            VPN_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, vpn_add_handler)],
+            VPN_SELECT_QR: [MessageHandler(filters.TEXT & ~filters.COMMAND, vpn_qr_handler)],
+            VPN_SELECT_DELETE: [MessageHandler(filters.TEXT & ~filters.COMMAND, vpn_delete_handler)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
+    app.add_handler(vpn_conv)
     
     # Startup notification
     if BOT_TOKEN and CHAT_ID:
