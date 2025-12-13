@@ -5,7 +5,7 @@
 set -e
 
 echo "========================================="
-echo "   BDRman v4.0 - Automatic Installer"
+echo "   BDRman v4.9.16 - Automatic Installer"
 echo "========================================="
 echo ""
 
