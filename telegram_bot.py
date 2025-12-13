@@ -505,6 +505,29 @@ async def vpn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = run_cmd(f"echo '{user}' | /usr/local/bin/bdrman vpn add", timeout=60)
     await update.message.reply_text(f"```\n{res}\n```", parse_mode='Markdown')
 
+    # Try to send generated files (PNG and Conf)
+    # Check common locations (cwd and /root)
+    files_to_check = [
+        f"{user}.png",
+        f"/root/{user}.png",
+        f"{user}.conf", 
+        f"/root/{user}.conf"
+    ]
+    
+    sent_files = set()
+    for fpath in files_to_check:
+        if os.path.exists(fpath) and fpath not in sent_files:
+            try:
+                if fpath.endswith('.png'):
+                    await update.message.reply_photo(photo=open(fpath, 'rb'), caption=f"📱 QR Code: {user}")
+                elif fpath.endswith('.conf'):
+                    await update.message.reply_document(document=open(fpath, 'rb'), filename=os.path.basename(fpath), caption="📄 Config File")
+                sent_files.add(fpath)
+                # Avoid sending duplicates if paths resolve to same file
+                # (Simple set check of path string is basic, but sufficient for typical setup)
+            except Exception as e:
+                logger.error(f"Failed to send file {fpath}: {e}")
+
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Manage backups: create, list, download, delete

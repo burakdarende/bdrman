@@ -26,7 +26,68 @@ vpn_add_client(){
   # Run the script
   echo "🚀 Launching WireGuard installer..."
   bash "$WG_SCRIPT"
-  log "wireguard-install.sh executed"
+  
+  # Post-install: Generate QR and Link
+  # Find the most recently modified .conf file in current dir or HOME
+  LATEST_CONF=$(ls -t *.conf "$HOME"/*.conf 2>/dev/null | head -n1)
+  
+  if [ -n "$LATEST_CONF" ]; then
+    CLIENT_NAME="${LATEST_CONF%.conf}"
+    PNG_FILE="${CLIENT_NAME}.png"
+    
+    echo "⚙️  Generating QR Code for $CLIENT_NAME..."
+    qrencode -t PNG -o "$PNG_FILE" < "$LATEST_CONF"
+    
+    # Check for transfer.sh or similar for uploading
+    # Using 0x0.st as it's reliable for CLI
+    echo "📤 Uploading QR code for remote access..."
+    QR_LINK=$(curl -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+    
+    if [ -n "$QR_LINK" ]; then
+      echo "✅ QR Code Link: $QR_LINK"
+      echo "   (Open this link on your phone to scan)"
+    fi
+    
+    # Also show ASCII for convenience
+    echo "📱 Scanning QR in terminal:"
+    qrencode -t ANSIutf8 < "$LATEST_CONF"
+  fi
+  
+  log "wireguard-install.sh executed and QR processed"
+}
+
+vpn_list_conf(){
+  echo "=== VPN CONFIGS ==="
+  ls -1 *.conf 2>/dev/null | sed 's/\.conf$//'
+}
+
+vpn_show_qr(){
+  echo "=== SHOW QR CODE ==="
+  vpn_list_conf
+  echo ""
+  read -rp "Enter client name: " client_name
+  
+  CONF_FILE="${client_name}.conf"
+  PNG_FILE="${client_name}.png"
+  
+  if [ -f "$CONF_FILE" ]; then
+    echo "1) ASCII (Terminal)"
+    echo "2) PNG Link (Upload)"
+    read -rp "Select format (1/2): " fmt
+    
+    if [ "$fmt" == "1" ]; then
+      qrencode -t ANSIutf8 < "$CONF_FILE"
+    elif [ "$fmt" == "2" ]; then
+      if [ ! -f "$PNG_FILE" ]; then
+        qrencode -t PNG -o "$PNG_FILE" < "$CONF_FILE"
+      fi
+      echo "Uploading..."
+      LINK=$(curl -F "file=@$PNG_FILE" https://0x0.st 2>/dev/null)
+      echo "✅ Link: $LINK"
+    fi
+  else
+    echo "❌ Config file not found: $CONF_FILE"
+  fi
 }
 
 vpn_restart(){
@@ -72,7 +133,8 @@ vpn_menu(){
     echo "4) Restart WireGuard"
     echo "5) List Config Files (/etc/wireguard)"
     echo "6) Show wg show"
-    read -rp "Select (0-6): " c
+    echo "7) Show QR Code (PNG/ASCII)"
+    read -rp "Select (0-7): " c
     case "$c" in
       0) break ;;
       1) vpn_install_wireguard; pause ;;
@@ -81,6 +143,7 @@ vpn_menu(){
       4) vpn_restart; pause ;;
       5) ls -la /etc/wireguard 2>/dev/null || echo "Directory not found."; pause ;;
       6) wg show || echo "WireGuard not installed."; pause ;;
+      7) vpn_show_qr; pause ;;
       *) echo "Invalid choice."; pause ;;
     esac
   done
