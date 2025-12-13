@@ -72,6 +72,19 @@ def check_auth(update: Update) -> bool:
     user_id = str(update.effective_user.id)
     if user_id != CHAT_ID:
         logger.warning(f"Unauthorized: {user_id}")
+        try:
+            import requests
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                data={
+                    "chat_id": user_id, 
+                    "text": f"⛔ *Unauthorized Access*\\nYour ID: `{user_id}`\\nExpected: `{CHAT_ID}`", 
+                    "parse_mode": "Markdown"
+                },
+                timeout=5
+            )
+        except Exception as e:
+            logger.error(f"Failed to send auth warning: {e}")
         return False
     return True
 
